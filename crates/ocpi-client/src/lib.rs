@@ -17,9 +17,9 @@ use ocpi_types::{
     transport::{CredentialToken, PaginatedParams, PaginationMeta},
     v2_2_1::{
         AuthorizationInfo, CancelReservation, Cdr, ChargingPreferences,
-        ChargingPreferencesResponse, CommandResponse, CommandResult, CommandType, Credentials,
-        LocationReferences, ReserveNow, Session, StartSession, StopSession, Tariff, Token,
-        TokenType, UnlockConnector,
+        ChargingPreferencesResponse, CommandResponse, CommandResult, CommandType, Connector,
+        Credentials, Evse, Location, LocationReferences, ReserveNow, Session, StartSession,
+        StopSession, Tariff, Token, TokenType, UnlockConnector,
     },
     version::{Version, VersionDetails, VersionNumber},
     OcpiResponse,
@@ -44,6 +44,19 @@ fn select_version<'a>(remote: &'a [Version], supported: &[VersionNumber]) -> Opt
         .iter()
         .filter(|v| supported.contains(&v.version))
         .max_by_key(|v| v.version)
+}
+
+/// Append URL path `segments` to a base endpoint URL, collapsing any single
+/// trailing slash on the base so the result has exactly one separator per
+/// segment. Used to build Sender-interface object URLs such as
+/// `{locations_url}/{location_id}/{evse_uid}/{connector_id}`.
+fn join_segments(base: &str, segments: &[&str]) -> String {
+    let mut url = base.trim_end_matches('/').to_string();
+    for seg in segments {
+        url.push('/');
+        url.push_str(seg);
+    }
+    url
 }
 
 /// A configured OCPI client pointed at one remote party's API base URL.
@@ -603,6 +616,171 @@ impl OcpiClient {
         Ok(location)
     }
 
+    // ── Locations ─────────────────────────────────────────────────────────────
+
+    /// Fetch a paginated list of Locations from a CPO's Sender interface
+    /// (`GET {url}`).
+    ///
+    /// `url` is the absolute URL of the CPO's Locations sender endpoint.
+    /// `params` carries `date_from`, `date_to`, `offset`, and `limit`.
+    ///
+    /// Returns the first page of Locations plus pagination metadata. Use
+    /// [`PaginationMeta::next_url`] to retrieve subsequent pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// envelope carries no data.
+    ///
+    /// See `mod_locations.asciidoc` — Sender Interface, GET List.
+    pub async fn get_locations(
+        &self,
+        url: &str,
+        params: PaginatedParams,
+    ) -> Result<(Vec<Location>, PaginationMeta), ClientError> {
+        let mut parsed = url::Url::parse(url)?;
+        if let Some(date_from) = params.date_from {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_from", &date_from.to_rfc3339());
+        }
+        if let Some(date_to) = params.date_to {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_to", &date_to.to_rfc3339());
+        }
+        if let Some(offset) = params.offset {
+            parsed
+                .query_pairs_mut()
+                .append_pair("offset", &offset.to_string());
+        }
+        if let Some(limit) = params.limit {
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?
+            .error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<Location>> = response.json().await?;
+        let locations = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((locations, meta))
+    }
+
+    /// Fetch a single Location by id from a CPO's Sender interface
+    /// (`GET {url}/{location_id}`).
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with OCPI status
+    ///   code `2003` (Unknown Location) or HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_location(
+        &self,
+        url: &str,
+        location_id: &str,
+    ) -> Result<Location, ClientError> {
+        let endpoint = join_segments(url, &[location_id]);
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Location> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Fetch a single EVSE from a CPO's Sender interface
+    /// (`GET {url}/{location_id}/{evse_uid}`).
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with OCPI status
+    ///   code `2003` or HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_evse(
+        &self,
+        url: &str,
+        location_id: &str,
+        evse_uid: &str,
+    ) -> Result<Evse, ClientError> {
+        let endpoint = join_segments(url, &[location_id, evse_uid]);
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Evse> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Fetch a single Connector from a CPO's Sender interface
+    /// (`GET {url}/{location_id}/{evse_uid}/{connector_id}`).
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with OCPI status
+    ///   code `2003` or HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_connector(
+        &self,
+        url: &str,
+        location_id: &str,
+        evse_uid: &str,
+        connector_id: &str,
+    ) -> Result<Connector, ClientError> {
+        let endpoint = join_segments(url, &[location_id, evse_uid, connector_id]);
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Connector> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
     // ── Tariffs ───────────────────────────────────────────────────────────────
 
     /// Fetch a paginated list of tariffs from a CPO (`GET {url}`).
@@ -1101,7 +1279,7 @@ impl OcpiClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{select_version, OcpiClient};
+    use super::{join_segments, select_version, OcpiClient};
     use ocpi_types::{
         common::Url as OcpiUrl,
         version::{Version, VersionNumber},
@@ -1266,5 +1444,56 @@ mod tests {
     fn compat_false_is_default() {
         let client = OcpiClient::new(Url::parse("https://example.com/").unwrap(), "tok");
         assert!(!client.compat_raw_token);
+    }
+
+    // ── Locations URL building (join_segments) ────────────────────────────────
+
+    #[test]
+    fn join_segments_single_location() {
+        let base = "https://server.com/ocpi/cpo/2.2.1/locations";
+        assert_eq!(
+            join_segments(base, &["LOC1"]),
+            "https://server.com/ocpi/cpo/2.2.1/locations/LOC1"
+        );
+    }
+
+    #[test]
+    fn join_segments_trims_trailing_slash() {
+        // A base with a trailing slash must not produce a double separator.
+        let base = "https://server.com/ocpi/cpo/2.2.1/locations/";
+        assert_eq!(
+            join_segments(base, &["LOC1"]),
+            "https://server.com/ocpi/cpo/2.2.1/locations/LOC1"
+        );
+    }
+
+    #[test]
+    fn join_segments_evse_and_connector() {
+        let base = "https://server.com/ocpi/cpo/2.2.1/locations";
+        assert_eq!(
+            join_segments(base, &["LOC1", "3256"]),
+            "https://server.com/ocpi/cpo/2.2.1/locations/LOC1/3256"
+        );
+        assert_eq!(
+            join_segments(base, &["LOC1", "3256", "1"]),
+            "https://server.com/ocpi/cpo/2.2.1/locations/LOC1/3256/1"
+        );
+    }
+
+    #[test]
+    fn join_segments_no_segments_returns_trimmed_base() {
+        assert_eq!(
+            join_segments("https://server.com/locations/", &[]),
+            "https://server.com/locations"
+        );
+    }
+
+    #[test]
+    fn join_segments_result_parses_as_url() {
+        let url = join_segments(
+            "https://server.com/ocpi/cpo/2.2.1/locations",
+            &["LOC1", "3256", "1"],
+        );
+        assert!(url::Url::parse(&url).is_ok());
     }
 }
