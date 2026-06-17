@@ -19,8 +19,19 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "CC0-1.0",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
+
+# `ring` ships a custom LICENSE file (an aggregate of MIT/ISC/OpenSSL terms)
+# rather than an SPDX `license` field, so cargo-deny cannot classify it. Clarify
+# it explicitly. The hash pins the LICENSE we audited; if ring changes it,
+# cargo-deny fails loudly and we re-review.
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [bans]
 # Duplicate transitive versions are common; warn rather than fail.
