@@ -17,6 +17,11 @@
 //! - `v2_1_1` / `v2_2_1` / `v2_3_0` — version-namespaced module models,
 //!   populated incrementally per the roadmap milestones.
 //!
+//! ## Layout (continued)
+//!
+//! - [`transport`] — HTTP transport conventions: token auth, routing headers,
+//!   pagination params and response metadata.
+//!
 //! ## Design philosophy
 //!
 //! Defer *logic*, not *schema*: types are forward-compatible from day one.
@@ -31,13 +36,40 @@ pub mod common;
 pub mod envelope;
 pub mod error;
 pub mod status;
+pub mod transport;
 pub mod version;
 
 pub mod v2_1_1;
 pub mod v2_2_1;
 pub mod v2_3_0;
 
-pub use envelope::OcpiResponse;
+pub use common::{
+    CiString, CiString2, CiString255, CiString3, CiString36, CiString39, CiString48, CiString64,
+    DisplayText, EnergyMix, EnergySource, EnergySourceCategory, EnvironmentalImpact,
+    EnvironmentalImpactCategory, GeoLocation, Price, Role, Url,
+};
+pub use envelope::{OcpiPaged, OcpiResponse};
 pub use error::OcpiError;
 pub use status::OcpiStatusCode;
-pub use version::{Version, VersionNumber};
+pub use v2_2_1::{
+    ActiveChargingProfile, ActiveChargingProfileResult, AdditionalGeoLocation, AllowedType,
+    AuthMethod, AuthorizationInfo, CancelReservation, Capability, Cdr, CdrDimension,
+    CdrDimensionType, CdrLocation, CdrToken, ChargingPeriod, ChargingPreferences,
+    ChargingPreferencesResponse, ChargingProfile, ChargingProfilePeriod, ChargingProfileResponse,
+    ChargingProfileResponseType, ChargingProfileResult, ChargingProfileResultType,
+    ChargingRateUnit, ClearProfileResult, ClientInfo, CommandResponse, CommandResponseType,
+    CommandResult, CommandResultType, CommandType, ConnectionStatus, Connector, ConnectorFormat,
+    ConnectorType, DayOfWeek, EnergyContract, Evse, ExceptionalPeriod, Facility, Hours,
+    ImageCategory, Location, LocationReferences, ParkingRestriction, ParkingType, PowerType,
+    PriceComponent, ProfileType, PublishTokenType, RegularHours, ReservationRestrictionType,
+    ReserveNow, Session, SessionStatus, SetChargingProfile, SignedData, SignedValue, StartSession,
+    Status, StatusSchedule, StopSession, Tariff, TariffDimensionType, TariffElement,
+    TariffRestrictions, TariffType, Token, TokenType, UnlockConnector, WhitelistType,
+};
+pub use version::{Endpoint, InterfaceRole, ModuleID, Version, VersionDetails, VersionNumber};
+
+// Re-export common third-party types so downstream crates can use them
+// without declaring direct dependencies on these packages.
+pub use chrono::{self, DateTime, Utc};
+pub use serde;
+pub use serde_json;

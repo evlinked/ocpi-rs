@@ -5,11 +5,21 @@
 //! errors, `3xxx` server errors, and `4xxx` hub errors. See the OCPI
 //! `status_codes` specification chapter.
 
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
 /// A status code returned in the body of every OCPI response.
 ///
-/// Use [`OcpiStatusCode::code`] for the wire integer and
-/// [`OcpiStatusCode::from_code`] to parse one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Serialises and deserialises as the integer wire value (e.g. `1000`).
+/// Use [`OcpiStatusCode::code`] for the raw integer and
+/// [`OcpiStatusCode::from_code`] to parse a known code.
+///
+/// Unknown or custom-range codes (e.g. `19xx`, `29xx`, `39xx`, `49xx`) are
+/// preserved as [`OcpiStatusCode::Unknown`] so they survive a round-trip
+/// without data loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "u16", into = "u16")]
 pub enum OcpiStatusCode {
     /// `1000` — generic success.
     Success,
@@ -39,6 +49,8 @@ pub enum OcpiStatusCode {
     HubTimeout,
     /// `4003` — connection problem inside the hub.
     HubConnectionProblem,
+    /// A status code not defined in the standard (custom or future range).
+    Unknown(u16),
 }
 
 impl OcpiStatusCode {
@@ -60,10 +72,15 @@ impl OcpiStatusCode {
             Self::UnknownReceiver => 4001,
             Self::HubTimeout => 4002,
             Self::HubConnectionProblem => 4003,
+            Self::Unknown(n) => n,
         }
     }
 
-    /// Parse a wire integer into a known status code, if recognised.
+    /// Parse a wire integer into a known status code.
+    ///
+    /// Returns `None` for codes outside the standard table; use
+    /// [`From<u16>`] (which produces [`Self::Unknown`]) if you need an
+    /// infallible parse.
     #[must_use]
     pub const fn from_code(code: u16) -> Option<Self> {
         let value = match code {
@@ -110,16 +127,42 @@ impl OcpiStatusCode {
             Self::UnknownReceiver => "Unknown receiver",
             Self::HubTimeout => "Timeout on forwarded request",
             Self::HubConnectionProblem => "Hub connection problem",
+            Self::Unknown(_) => "Unknown status code",
         }
     }
 }
+
+// --- serde glue -----------------------------------------------------------
+
+impl From<u16> for OcpiStatusCode {
+    fn from(code: u16) -> Self {
+        Self::from_code(code).unwrap_or(Self::Unknown(code))
+    }
+}
+
+impl From<OcpiStatusCode> for u16 {
+    fn from(code: OcpiStatusCode) -> Self {
+        code.code()
+    }
+}
+
+// --- Display --------------------------------------------------------------
+
+impl fmt::Display for OcpiStatusCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.code())
+    }
+}
+
+// --- Tests ----------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::OcpiStatusCode;
 
+    /// Every standard code survives a round-trip through the integer value.
     #[test]
-    fn codes_round_trip() {
+    fn known_codes_round_trip() {
         for code in [
             1000u16, 2000, 2001, 2002, 2003, 2004, 3000, 3001, 3002, 3003, 4000, 4001, 4002, 4003,
         ] {
@@ -128,14 +171,56 @@ mod tests {
         }
     }
 
+    /// Non-standard codes are preserved as `Unknown`.
     #[test]
-    fn unknown_code_is_none() {
-        assert_eq!(OcpiStatusCode::from_code(9999), None);
+    fn unknown_code_round_trips() {
+        let u = OcpiStatusCode::from(9999u16);
+        assert_eq!(u, OcpiStatusCode::Unknown(9999));
+        assert_eq!(u.code(), 9999);
+        assert!(!u.is_success());
     }
 
+    /// `from_code` returns `None` for non-standard codes.
+    #[test]
+    fn from_code_returns_none_for_unknown() {
+        assert_eq!(OcpiStatusCode::from_code(9999), None);
+        // Custom ranges defined by the spec (19xx, 29xx, 39xx, 49xx)
+        assert_eq!(OcpiStatusCode::from_code(1900), None);
+        assert_eq!(OcpiStatusCode::from_code(2900), None);
+    }
+
+    /// Only `1000` is a success code.
     #[test]
     fn only_1000_is_success() {
         assert!(OcpiStatusCode::Success.is_success());
         assert!(!OcpiStatusCode::ServerError.is_success());
+        assert!(!OcpiStatusCode::Unknown(1000).is_success());
+    }
+
+    /// `Display` shows the integer code.
+    #[test]
+    fn display_shows_integer() {
+        assert_eq!(OcpiStatusCode::Success.to_string(), "1000");
+        assert_eq!(OcpiStatusCode::Unknown(9999).to_string(), "9999");
+    }
+
+    /// Serde round-trip via JSON.
+    #[test]
+    fn serde_round_trip_known() {
+        let code = OcpiStatusCode::InvalidParameters;
+        let json = serde_json::to_string(&code).expect("serialize");
+        assert_eq!(json, "2001");
+        let back: OcpiStatusCode = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, code);
+    }
+
+    /// Unknown codes survive a JSON round-trip.
+    #[test]
+    fn serde_round_trip_unknown() {
+        let json = "1900";
+        let code: OcpiStatusCode = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(code, OcpiStatusCode::Unknown(1900));
+        let back = serde_json::to_string(&code).expect("serialize");
+        assert_eq!(back, "1900");
     }
 }
