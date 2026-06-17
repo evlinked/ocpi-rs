@@ -5,6 +5,51 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-06-17 (run 14) — M3 Locations client methods (issue #30)
+
+- **Issue #30:** Add the sender-side Locations methods to `ocpi-client::OcpiClient`
+  — `get_locations` (paginated list), `get_location`, `get_evse`, `get_connector`.
+  P2, M3, owner-approved `nightly`. Completes the client half of M3; unblocks #32
+  (e2e smoke test). Depends on #28 (types, merged via #59); #29 (server handler,
+  merged via #63) is the receiver counterpart.
+- **Branch:** `claude/dazzling-maxwell-n0dhr8` (designated dev branch this run).
+- **PR:** (opened this run) — `Closes #30`, squash auto-merge enabled.
+- **CI (local):** `fmt` ✅ `clippy --workspace --all-targets --all-features -D
+  warnings` ✅ `test --workspace --all-features` ✅ (ocpi-client 22 tests, +5 new;
+  workspace 192) — **no `Cargo.toml`/`Cargo.lock` changes → auto-mergeable.**
+  `cargo deny` not installed in the runner; dep graph unchanged from main (which
+  passes deny in CI).
+- **What shipped (all in `ocpi-client/src/lib.rs`):**
+  - `get_locations(url, params: PaginatedParams) -> (Vec<Location>, PaginationMeta)`
+    — mirrors `get_cdrs`: appends `date_from/date_to/offset/limit` query pairs,
+    parses `Link`/`X-Total-Count`/`X-Limit` via `PaginationMeta::from_headers`.
+  - `get_location` / `get_evse` / `get_connector` — single-object GETs mirroring
+    `get_cdr`: HTTP 404 → `ClientError::NotFound`, empty envelope → `EmptyData`.
+  - Private `join_segments(base, &[seg…])` helper — trims one trailing slash and
+    appends path segments; de-duplicates the inline `format!` path-building and is
+    the only non-HTTP logic, so it carries the 5 new unit tests.
+- **Spec fidelity:** Sender-interface GET Object path is
+  `{locations_url}/{location_id}[/{evse_uid}][/{connector_id}]`
+  (`mod_locations.asciidoc` L179–206) — **no** `country_code`/`party_id` segments
+  (those are the Receiver interface, already in #29). Issue #30 signatures match
+  the Sender shape exactly. Types: `Location`, `Evse`, `Connector`. `NotFound`
+  variant already existed (added with Sessions/CDRs).
+- **Known gap (follow-up issue filed):** like every existing functional-module
+  client method (Sessions/CDRs/Tariffs/Tokens), these do **not** attach the
+  `OCPI-to/from-party-id/country-code` routing headers — only `Authorization`.
+  Bolting them onto Locations alone would diverge the client API, so wiring them
+  uniformly across all senders is its own issue. The issue's routing-header AC is
+  deferred there.
+- **Testing approach:** kept the established pure-unit-test pattern (no
+  `httpmock`/`wiremock` dev-dep) to leave `Cargo.toml` untouched and the PR
+  auto-mergeable. HTTP-level round-trip coverage belongs to #32 (the dedicated
+  e2e harness issue, which introduces test deps in its own `needs-human` PR).
+- **Next:** #32 (M3 Locations e2e smoke test) is now unblocked — but it needs an
+  `axum-test`/`tower` dev-dep (→ `needs-human`); or pick #57 (M6 ChargingProfiles
+  server+client, P1, auto-mergeable) to push toward 2.2.1-complete. Suggest #57.
+
+---
+
 ## 2026-06-14 (run 13) — M3 Locations receiver handler + axum router (issue #29)
 
 - **Issue #29:** Add the receiver-side Locations handler to `ocpi-server`
