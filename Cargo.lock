@@ -688,6 +688,7 @@ dependencies = [
 name = "ocpi-types"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "chrono",
  "serde",
  "serde_json",

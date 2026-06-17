@@ -37,12 +37,13 @@ jobs:
       - name: Classify PR and apply policy
         run: |
           set -euo pipefail
-          meta="$(gh pr view "$PR" --repo "$REPO" --json author,authorAssociation,isDraft,additions,files)"
-          login="$(echo "$meta" | jq -r '.author.login // ""')"
-          assoc="$(echo "$meta" | jq -r '.authorAssociation // ""')"
-          draft="$(echo "$meta" | jq -r '.isDraft')"
-          additions="$(echo "$meta" | jq -r '.additions // 0')"
-          files="$(echo "$meta" | jq -r '.files[].path')"
+          # Use the REST API (gh pr view has no authorAssociation field).
+          pr="$(gh api "repos/$REPO/pulls/$PR")"
+          login="$(echo "$pr" | jq -r '.user.login // ""')"
+          assoc="$(echo "$pr" | jq -r '.author_association // ""')"
+          draft="$(echo "$pr" | jq -r '.draft')"
+          additions="$(echo "$pr" | jq -r '.additions // 0')"
+          files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')"
 
           guarded='^(\.github/|deny\.toml$|LICENSE$|Cargo\.lock$|.*\.ya?ml$|scripts/)'
           risky=no

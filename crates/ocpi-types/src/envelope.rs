@@ -1,9 +1,13 @@
-//! The OCPI response envelope.
+//! The OCPI response envelope and pagination helper.
 //!
 //! Every OCPI endpoint wraps its payload in a JSON object carrying the
 //! protocol `status_code`, an optional `status_message`, and the server
 //! `timestamp`. This module models that envelope generically over the payload
 //! type `T`.
+//!
+//! For paginated GET endpoints, [`OcpiPaged`] bundles the current-page items
+//! with the arithmetic needed to derive `X-Total-Count`, `X-Limit`, and the
+//! `Link: <…>; rel="next"` HTTP headers.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,6 +16,7 @@ use crate::status::OcpiStatusCode;
 
 /// The standard OCPI response wrapper.
 ///
+/// `status_code` serialises as its integer wire value (e.g. `1000`).
 /// The `data` field is present on success and typically omitted on error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OcpiResponse<T> {
@@ -20,7 +25,9 @@ pub struct OcpiResponse<T> {
     pub data: Option<T>,
 
     /// The OCPI status code (e.g. `1000` for success).
-    pub status_code: u16,
+    ///
+    /// Serialises and deserialises as the raw integer on the wire.
+    pub status_code: OcpiStatusCode,
 
     /// An optional human-readable message, usually set on error.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -40,7 +47,21 @@ impl<T> OcpiResponse<T> {
     pub fn success(data: T) -> Self {
         Self {
             data: Some(data),
-            status_code: OcpiStatusCode::Success.code(),
+            status_code: OcpiStatusCode::Success,
+            status_message: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    /// Build a successful response (`status_code = 1000`) with no data payload.
+    ///
+    /// Use this for mutations (PUT, PATCH, DELETE) where the spec requires
+    /// `status_code = 1000` but no `data` field in the response body.
+    #[must_use]
+    pub fn success_empty() -> Self {
+        Self {
+            data: None,
+            status_code: OcpiStatusCode::Success,
             status_message: None,
             timestamp: Utc::now(),
         }
@@ -51,29 +72,97 @@ impl<T> OcpiResponse<T> {
     pub fn error(code: OcpiStatusCode, message: impl Into<String>) -> Self {
         Self {
             data: None,
-            status_code: code.code(),
+            status_code: code,
             status_message: Some(message.into()),
             timestamp: Utc::now(),
         }
     }
 
-    /// The recognised [`OcpiStatusCode`], if the integer code is known.
+    /// The OCPI status code carried in this envelope.
     #[must_use]
-    pub fn status(&self) -> Option<OcpiStatusCode> {
-        OcpiStatusCode::from_code(self.status_code)
+    pub fn status(&self) -> OcpiStatusCode {
+        self.status_code
     }
 
     /// `true` if the envelope reports success (`status_code = 1000`).
     #[must_use]
     pub fn is_success(&self) -> bool {
-        self.status_code == OcpiStatusCode::Success.code()
+        self.status_code.is_success()
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pagination helper
+// ---------------------------------------------------------------------------
+
+/// Carries one page of results together with the metadata needed to build the
+/// `X-Total-Count`, `X-Limit`, and `Link: <…>; rel="next"` HTTP response
+/// headers defined by the OCPI pagination spec.
+///
+/// The server layer (e.g. `ocpi-server`'s axum integration) converts this
+/// into an [`OcpiResponse<Vec<T>>`] body **and** the corresponding headers,
+/// so individual handlers return a single typed value rather than constructing
+/// headers manually.
+///
+/// # Spec reference
+/// `specs/ocpi/2.2.1/transport_and_format.asciidoc` — *Pagination* section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcpiPaged<T> {
+    /// Items for the current page (becomes `data` in the response body).
+    pub items: Vec<T>,
+    /// Zero-based offset of the first item in this page.
+    pub offset: u32,
+    /// The effective page size cap (value for `X-Limit`).
+    ///
+    /// This is the upper limit the server applied; the actual number of
+    /// returned items may be smaller if fewer objects remain.
+    pub limit: u32,
+    /// Total number of matching objects in the full result set
+    /// (value for `X-Total-Count`).
+    pub total_count: u32,
+}
+
+impl<T> OcpiPaged<T> {
+    /// Construct a page.
+    #[must_use]
+    pub fn new(items: Vec<T>, offset: u32, limit: u32, total_count: u32) -> Self {
+        Self {
+            items,
+            offset,
+            limit,
+            total_count,
+        }
+    }
+
+    /// `true` when there is at least one more page after this one.
+    #[must_use]
+    pub fn has_next(&self) -> bool {
+        self.offset + self.limit < self.total_count
+    }
+
+    /// The offset to pass in the next page request, or `None` on the last page.
+    #[must_use]
+    pub fn next_offset(&self) -> Option<u32> {
+        self.has_next().then(|| self.offset + self.limit)
+    }
+
+    /// Consume `self` and return the standard OCPI response body for this page.
+    #[must_use]
+    pub fn into_response(self) -> OcpiResponse<Vec<T>> {
+        OcpiResponse::success(self.items)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
-    use super::OcpiResponse;
+    use super::{OcpiPaged, OcpiResponse};
     use crate::status::OcpiStatusCode;
+
+    // --- OcpiResponse -------------------------------------------------------
 
     #[test]
     fn success_round_trips_through_json() {
@@ -82,7 +171,14 @@ mod tests {
         let back: OcpiResponse<u32> = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.data, Some(42));
         assert!(back.is_success());
-        assert_eq!(back.status(), Some(OcpiStatusCode::Success));
+        assert_eq!(back.status(), OcpiStatusCode::Success);
+    }
+
+    #[test]
+    fn status_code_serialises_as_integer() {
+        let resp = OcpiResponse::success(());
+        let json = serde_json::to_string(&resp).expect("serialize");
+        assert!(json.contains("\"status_code\":1000"), "got: {json}");
     }
 
     #[test]
@@ -90,7 +186,69 @@ mod tests {
         let resp: OcpiResponse<u32> =
             OcpiResponse::error(OcpiStatusCode::InvalidParameters, "missing country_code");
         let json = serde_json::to_string(&resp).expect("serialize");
-        assert!(!json.contains("\"data\""));
-        assert!(json.contains("2001"));
+        assert!(!json.contains("\"data\""), "data should be absent: {json}");
+        assert!(json.contains("2001"), "expected 2001: {json}");
+    }
+
+    #[test]
+    fn unknown_status_code_round_trips() {
+        let json = r#"{"status_code":1900,"timestamp":"2026-01-01T00:00:00Z"}"#;
+        let resp: OcpiResponse<serde_json::Value> =
+            serde_json::from_str(json).expect("deserialize");
+        assert_eq!(resp.status(), OcpiStatusCode::Unknown(1900));
+        assert!(!resp.is_success());
+    }
+
+    // --- OcpiPaged ----------------------------------------------------------
+
+    #[test]
+    fn has_next_mid_page() {
+        let page: OcpiPaged<u32> = OcpiPaged::new(vec![1, 2, 3], 0, 3, 10);
+        assert!(page.has_next());
+        assert_eq!(page.next_offset(), Some(3));
+    }
+
+    #[test]
+    fn no_next_on_last_page() {
+        let page: OcpiPaged<u32> = OcpiPaged::new(vec![9, 10], 8, 5, 10);
+        assert!(!page.has_next());
+        assert_eq!(page.next_offset(), None);
+    }
+
+    #[test]
+    fn no_next_when_exact_fit() {
+        // offset=5, limit=5, total=10 → last page exactly
+        let page: OcpiPaged<u32> = OcpiPaged::new(vec![6, 7, 8, 9, 10], 5, 5, 10);
+        assert!(!page.has_next());
+        assert_eq!(page.next_offset(), None);
+    }
+
+    #[test]
+    fn no_next_on_empty_result() {
+        let page: OcpiPaged<u32> = OcpiPaged::new(vec![], 0, 50, 0);
+        assert!(!page.has_next());
+        assert_eq!(page.next_offset(), None);
+    }
+
+    #[test]
+    fn into_response_wraps_items() {
+        let page = OcpiPaged::new(vec![1u32, 2, 3], 0, 10, 3);
+        let resp = page.into_response();
+        assert!(resp.is_success());
+        assert_eq!(resp.data, Some(vec![1, 2, 3]));
+    }
+
+    // --- OcpiResponse::success_empty ------------------------------------------
+
+    #[test]
+    fn success_empty_has_no_data_field() {
+        let resp: OcpiResponse<u32> = OcpiResponse::success_empty();
+        assert!(resp.is_success());
+        assert_eq!(resp.status_code, OcpiStatusCode::Success);
+        assert!(resp.data.is_none());
+        // Serialised JSON must omit the "data" field.
+        let json = serde_json::to_string(&resp).expect("serialize");
+        assert!(!json.contains("\"data\""), "data should be absent: {json}");
+        assert!(json.contains("\"status_code\":1000"), "got: {json}");
     }
 }
