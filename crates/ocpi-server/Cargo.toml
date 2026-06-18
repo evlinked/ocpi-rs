@@ -20,3 +20,9 @@ axum = ["dep:axum"]
 ocpi-types.workspace = true
 thiserror.workspace = true
 axum = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The `http` module's handler tests are `async fn`s (they `.await` the axum
+# handlers directly), so they need a runtime + the `#[tokio::test]` macro.
+# `rt` + `macros` only — no `net`/`io`; test-only, absent from the prod tree.
+tokio = { workspace = true, features = ["rt", "macros"] }
