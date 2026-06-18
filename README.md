@@ -5,7 +5,7 @@
 [![CI](https://github.com/EVLinked/ocpi-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/EVLinked/ocpi-rs/actions/workflows/ci.yml)
 [![Security](https://github.com/EVLinked/ocpi-rs/actions/workflows/security.yml/badge.svg)](https://github.com/EVLinked/ocpi-rs/actions/workflows/security.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.82%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.86%2B-orange.svg)](https://www.rust-lang.org)
 
 ---
 

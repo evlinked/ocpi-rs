@@ -10,7 +10,7 @@ members = [
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.86"
 authors = ["ocpi-rs contributors"]
 license = "MIT"
 repository = "https://github.com/EVLinked/ocpi-rs"

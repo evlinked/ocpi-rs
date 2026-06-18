@@ -1,5 +1,5 @@
 # Clippy configuration for ocpi-rs (valid keys only; verified against clippy 1.92).
-msrv = "1.82"
+msrv = "1.86"
 cognitive-complexity-threshold = 30
 type-complexity-threshold = 250
 too-many-arguments-threshold = 8
