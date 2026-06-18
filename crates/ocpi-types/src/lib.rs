@@ -44,9 +44,9 @@ pub mod v2_2_1;
 pub mod v2_3_0;
 
 pub use common::{
-    CiString, CiString2, CiString255, CiString3, CiString36, CiString39, CiString48, CiString64,
-    DisplayText, EnergyMix, EnergySource, EnergySourceCategory, EnvironmentalImpact,
-    EnvironmentalImpactCategory, GeoLocation, Price, Role, Url,
+    BusinessDetails, CiString, CiString2, CiString255, CiString3, CiString36, CiString39,
+    CiString48, CiString64, DisplayText, EnergyMix, EnergySource, EnergySourceCategory,
+    EnvironmentalImpact, EnvironmentalImpactCategory, GeoLocation, Image, Price, Role, Url,
 };
 pub use envelope::{OcpiPaged, OcpiResponse};
 pub use error::OcpiError;
@@ -59,12 +59,13 @@ pub use v2_2_1::{
     ChargingProfileResponseType, ChargingProfileResult, ChargingProfileResultType,
     ChargingRateUnit, ClearProfileResult, ClientInfo, CommandResponse, CommandResponseType,
     CommandResult, CommandResultType, CommandType, ConnectionStatus, Connector, ConnectorFormat,
-    ConnectorType, DayOfWeek, EnergyContract, Evse, ExceptionalPeriod, Facility, Hours,
-    ImageCategory, Location, LocationReferences, ParkingRestriction, ParkingType, PowerType,
-    PriceComponent, ProfileType, PublishTokenType, RegularHours, ReservationRestrictionType,
-    ReserveNow, Session, SessionStatus, SetChargingProfile, SignedData, SignedValue, StartSession,
-    Status, StatusSchedule, StopSession, Tariff, TariffDimensionType, TariffElement,
-    TariffRestrictions, TariffType, Token, TokenType, UnlockConnector, WhitelistType,
+    ConnectorType, Credentials, CredentialsRole, DayOfWeek, EnergyContract, Evse,
+    ExceptionalPeriod, Facility, Hours, ImageCategory, Location, LocationReferences,
+    ParkingRestriction, ParkingType, PowerType, PriceComponent, ProfileType, PublishTokenType,
+    RegularHours, ReservationRestrictionType, ReserveNow, Session, SessionStatus,
+    SetChargingProfile, SignedData, SignedValue, StartSession, Status, StatusSchedule, StopSession,
+    Tariff, TariffDimensionType, TariffElement, TariffRestrictions, TariffType, Token, TokenType,
+    UnlockConnector, WhitelistType,
 };
 pub use version::{Endpoint, InterfaceRole, ModuleID, Version, VersionDetails, VersionNumber};
 

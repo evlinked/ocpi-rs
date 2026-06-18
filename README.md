@@ -76,8 +76,8 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 
 | Module | 2.1.1 | 2.2.1 | 2.3.0 |
 |---|:--:|:--:|:--:|
-| Versions | ☐ | ☐ | ☐ |
-| Credentials | ☐ | ☐ | ☐ |
+| Versions | ☐ | ☑ | ☐ |
+| Credentials | ☐ | ☑ | ☐ |
 | Locations | ☐ | ☐ | ☐ |
 | Sessions | ☐ | ☐ | ☐ |
 | CDRs | ☐ | ☐ | ☐ |
