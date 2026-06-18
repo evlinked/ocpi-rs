@@ -48,6 +48,10 @@ cycle. Keep entries short and specific. Prune contradictions.
 - **Public async traits need `#[allow(async_fn_in_trait)]`.** The
   `async_fn_in_trait` lint is warn-by-default and becomes an error under
   `-D warnings`. Add the allow (we don't need `Send` bounds for these handlers).
+- **Don't *invoke* `::default()` on a unit struct in tests.** `#[derive(Default)]`
+  on a unit struct (e.g. `CommandsConfig`, `ChargingProfilesConfig`) is fine, but
+  calling `Foo::default()` trips `clippy::default_constructed_unit_structs` under
+  `-D warnings`. Test `Foo::new()` instead; the derive stays for API parity.
 - **Private struct fields must be read** or rustc's dead-code lint fails the
   build under `-D warnings`. Either use the field in a real method or rethink it.
 - **Use `reqwest` with `rustls-tls` + `default-features = false`** to avoid a

@@ -5,6 +5,60 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-06-18 (run 15) — M6 ChargingProfiles server handler + router + client methods (issue #57)
+
+- **Issue #57:** Add the receiver-side `ChargingProfilesHandler` + stateless
+  `ChargingProfilesConfig` + `charging_profiles_router()` to `ocpi-server`, and the
+  6 sender-side `OcpiClient` methods to `ocpi-client`, following the Commands
+  two-phase async pattern. P1, M6, owner-approved `nightly`. Types merged via #58.
+  **This completes M6 → the full 2.2.1 functional-module surface.**
+- **Branch:** `claude/dazzling-maxwell-buke6j` (designated dev branch this run).
+- **PR:** (opened this run) — `Closes #57`, squash auto-merge enabled.
+- **CI (local):** `fmt` ✅ `clippy --workspace --all-targets --all-features -D
+  warnings` ✅ `test --workspace --all-features` ✅ (ocpi-server 76 tests, +2 new;
+  ocpi-client 30 tests, +3 new). **Only `src/` changes — no `Cargo.toml`/
+  `Cargo.lock` → auto-mergeable.** `cargo check --locked` ✅. `cargo deny` not
+  installed in the runner; dep graph unchanged from main (which passes deny).
+- **What shipped:**
+  - `ocpi-server`: `ChargingProfilesHandler` trait (3 receiver methods:
+    `get_active_profile`/`set_charging_profile`/`clear_charging_profile`; 3 sender
+    result callbacks: `receive_active_profile_result`/`_charging_profile_result`/
+    `_clear_profile_result`). `ChargingProfilesConfig` stateless default —
+    `not_supported_response()` returns `ChargingProfileResponse { NOT_SUPPORTED,
+    timeout: 0 }`; callbacks are no-ops. `http::charging_profiles_router()` with
+    `GET/PUT/DELETE /chargingprofiles/{session_id}` (+ `?duration&response_url`
+    query structs) and 3 `POST .../{activeprofile,result,clearprofile}` callbacks.
+  - `ocpi-client`: `get_active_charging_profile` (GET+query), `set_charging_profile`
+    (PUT), `clear_charging_profile` (DELETE+query), and `post_active_profile_result`
+    / `post_charging_profile_result` / `post_clear_profile_result` (POST to opaque
+    `response_url` via shared private `post_profile_callback`). New pure helper
+    `charging_profile_url(base, session_id)` carries 3 URL-building unit tests.
+- **Spec fidelity:** receiver endpoints keyed by `{session_id}` single segment;
+  GET/DELETE put `duration`/`response_url` in the query string, not a body
+  (`mod_charging_profiles.asciidoc` §CPO GET/PUT/DELETE). Sender POST URL is open
+  per spec — the issue's `.../{activeprofile|result|clearprofile}` routes are a
+  reasonable convention; documented in PR. Receiver result routes carry
+  `{session_id}` but the issue's trait signatures omit it, so handlers extract
+  `Path(_session_id)` and ignore it (faithful to the owner-approved signatures).
+- **Known gaps (PR-documented):** (1) the **Sender PUT** method
+  (`PUT /chargingprofiles/{session_id}` with `ActiveChargingProfile` body — CPO
+  pushes a changed active profile to the SCSP/eMSP) is out of #57's scope; file a
+  follow-up. (2) Routing headers not auto-attached (cross-cutting #64). (3) No
+  async/HTTP round-trip test (would need a `tokio`/`axum-test` dev-dep →
+  `needs-human`); covered by the sync `not_supported_response`/URL-helper tests
+  per the established no-new-dev-deps pattern.
+- **Clippy trap:** calling `ChargingProfilesConfig::default()` on a unit struct in
+  a test trips `clippy::default_constructed_unit_structs` under `-D warnings`. The
+  `#[derive(Default)]` on the type is fine (mirrors `CommandsConfig`); just don't
+  *invoke* `.default()` pointlessly. Dropped that line.
+- **Next:** 2.2.1 functional surface is now complete. Good follow-ups: #70 (README
+  milestone/matrix sync — flip M6 ☑ + ChargingProfiles ☑ now that #57 lands), the
+  e2e smoke tests #71/#72/#32/#23 (each needs an `axum-test`/`tower` dev-dep →
+  `needs-human`), or a new issue for the ChargingProfiles **Sender PUT** method.
+  Suggest **#70** next (docs-only, auto-mergeable) once this merges.
+
+---
+
 ## 2026-06-17 (run 14) — M3 Locations client methods (issue #30)
 
 - **Issue #30:** Add the sender-side Locations methods to `ocpi-client::OcpiClient`
