@@ -13,6 +13,7 @@ mod error;
 
 pub use error::ClientError;
 
+use ocpi_server::{FetchError, FetchFuture, VersionFetcher};
 use ocpi_types::{
     transport::{CredentialToken, PaginatedParams, PaginationMeta},
     v2_2_1::{
@@ -1277,9 +1278,152 @@ impl OcpiClient {
     }
 }
 
+// ── OcpiVersionFetcher ──────────────────────────────────────────────────────
+
+/// Build the `Authorization` header value for a fetch-back request.
+///
+/// Mirrors [`OcpiClient::auth_header_value`]: Base64-encode the token per OCPI
+/// 2.2.1 §4.1.1, or send it raw in `compat_raw_token` mode for legacy peers.
+fn fetch_auth_header(token: &str, compat_raw_token: bool) -> String {
+    if compat_raw_token {
+        format!("Token {token}")
+    } else {
+        CredentialToken::new(token).to_header_value()
+    }
+}
+
+/// Parse a fetch-back URL, mapping a parse failure to [`FetchError::Transport`].
+///
+/// A malformed `url` (e.g. one a registering party put in its [`Credentials`])
+/// is a transport-level failure from the server's perspective — it cannot reach
+/// the party's API — so it maps to OCPI `3001` like any other transport error.
+fn parse_fetch_url(url: &str) -> Result<Url, FetchError> {
+    Url::parse(url).map_err(|e| FetchError::Transport(e.to_string()))
+}
+
+/// A reqwest-backed [`VersionFetcher`] for the credentials registration
+/// fetch-back.
+///
+/// `ocpi-server` defines the [`VersionFetcher`] contract but cannot depend on an
+/// HTTP client (that would risk a cyclic dependency with `ocpi-client`), so this
+/// crate supplies the default implementation. It reuses the same Base64
+/// `Authorization: Token` encoding ([`CredentialToken`]) and [`OcpiResponse`]
+/// envelope parsing as [`OcpiClient`].
+///
+/// Pass it to `ocpi_server::CredentialsConfig::new_with_fetcher` so the receiver
+/// can `GET {credentials.url}` and the chosen version's details during
+/// `POST`/`PUT /credentials`.
+///
+/// Spec: `specs/ocpi/2.2.1/credentials.asciidoc` — §POST Method (the receiver
+/// fetches the sender's `/versions` + version details after registration).
+#[derive(Debug, Clone)]
+pub struct OcpiVersionFetcher {
+    http: reqwest::Client,
+    /// When `true`, the token is sent raw (not Base64-encoded); for legacy
+    /// 2.1.1/2.2 peers, matching [`OcpiClient::with_compat_raw_token`].
+    compat_raw_token: bool,
+}
+
+impl Default for OcpiVersionFetcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OcpiVersionFetcher {
+    /// Create a fetcher with a fresh internal [`reqwest::Client`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            compat_raw_token: false,
+        }
+    }
+
+    /// Create a fetcher reusing an existing [`reqwest::Client`] (e.g. to share a
+    /// connection pool with an [`OcpiClient`]).
+    #[must_use]
+    pub fn with_client(http: reqwest::Client) -> Self {
+        Self {
+            http,
+            compat_raw_token: false,
+        }
+    }
+
+    /// Override the token encoding mode.
+    ///
+    /// - `false` (default): token is Base64-encoded per OCPI 2.2.1.
+    /// - `true`: token is sent raw; use with legacy 2.1.1/2.2 peers.
+    #[must_use]
+    pub fn with_compat_raw_token(mut self, compat: bool) -> Self {
+        self.compat_raw_token = compat;
+        self
+    }
+}
+
+impl VersionFetcher for OcpiVersionFetcher {
+    fn fetch_versions<'a>(&'a self, url: &'a str, token: &'a str) -> FetchFuture<'a, Vec<Version>> {
+        Box::pin(async move {
+            let parsed = parse_fetch_url(url)?;
+            let response = self
+                .http
+                .get(parsed)
+                .header(
+                    "Authorization",
+                    fetch_auth_header(token, self.compat_raw_token),
+                )
+                .send()
+                .await
+                .map_err(|e| FetchError::Transport(e.to_string()))?
+                .error_for_status()
+                .map_err(|e| FetchError::Transport(e.to_string()))?;
+            let envelope: OcpiResponse<Vec<Version>> = response
+                .json()
+                .await
+                .map_err(|e| FetchError::Invalid(e.to_string()))?;
+            envelope.data.ok_or_else(|| {
+                FetchError::Invalid("response envelope contained no data".to_string())
+            })
+        })
+    }
+
+    fn fetch_version_details<'a>(
+        &'a self,
+        url: &'a str,
+        token: &'a str,
+    ) -> FetchFuture<'a, VersionDetails> {
+        Box::pin(async move {
+            let parsed = parse_fetch_url(url)?;
+            let response = self
+                .http
+                .get(parsed)
+                .header(
+                    "Authorization",
+                    fetch_auth_header(token, self.compat_raw_token),
+                )
+                .send()
+                .await
+                .map_err(|e| FetchError::Transport(e.to_string()))?
+                .error_for_status()
+                .map_err(|e| FetchError::Transport(e.to_string()))?;
+            let envelope: OcpiResponse<VersionDetails> = response
+                .json()
+                .await
+                .map_err(|e| FetchError::Invalid(e.to_string()))?;
+            envelope.data.ok_or_else(|| {
+                FetchError::Invalid("response envelope contained no data".to_string())
+            })
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{join_segments, select_version, OcpiClient};
+    use super::{
+        fetch_auth_header, join_segments, parse_fetch_url, select_version, OcpiClient,
+        OcpiVersionFetcher,
+    };
+    use ocpi_server::{FetchError, VersionFetcher};
     use ocpi_types::{
         common::Url as OcpiUrl,
         version::{Version, VersionNumber},
@@ -1495,5 +1639,52 @@ mod tests {
             &["LOC1", "3256", "1"],
         );
         assert!(url::Url::parse(&url).is_ok());
+    }
+
+    // ── OcpiVersionFetcher ──────────────────────────────────────────────────────
+
+    #[test]
+    fn fetch_auth_header_base64_encodes_by_default() {
+        // Matches the OCPI 2.2.1 §4.1.1 Base64 encoding used by `OcpiClient`.
+        assert_eq!(
+            fetch_auth_header("example-token", false),
+            "Token ZXhhbXBsZS10b2tlbg=="
+        );
+    }
+
+    #[test]
+    fn fetch_auth_header_compat_sends_raw_token() {
+        // Legacy 2.1.1/2.2 peers receive the unencoded token.
+        assert_eq!(
+            fetch_auth_header("example-token", true),
+            "Token example-token"
+        );
+    }
+
+    #[test]
+    fn parse_fetch_url_accepts_absolute_url() {
+        assert!(parse_fetch_url("https://party.example/ocpi/versions").is_ok());
+    }
+
+    #[test]
+    fn parse_fetch_url_rejects_malformed_url_as_transport_error() {
+        // A bad URL in a registering party's credentials is unreachable →
+        // transport-level failure (OCPI 3001), not an `Invalid` parse of a body.
+        let err = parse_fetch_url("not a url").unwrap_err();
+        assert!(matches!(err, FetchError::Transport(_)));
+    }
+
+    #[test]
+    fn version_fetcher_is_constructible_and_object_safe() {
+        // `CredentialsConfig::new_with_fetcher` takes `Arc<dyn VersionFetcher>`,
+        // so the default impl must be usable as a trait object.
+        let fetcher = OcpiVersionFetcher::new().with_compat_raw_token(true);
+        let _boxed: std::sync::Arc<dyn VersionFetcher> = std::sync::Arc::new(fetcher);
+
+        // `with_client` reuses an existing reqwest client (shared pool).
+        let _shared = OcpiVersionFetcher::with_client(reqwest::Client::new());
+
+        // `Default` matches `new()`.
+        let _default = OcpiVersionFetcher::default();
     }
 }

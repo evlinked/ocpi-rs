@@ -13,6 +13,10 @@ categories.workspace = true
 
 [dependencies]
 ocpi-types.workspace = true
+# Trait-only dependency: supplies the `VersionFetcher` contract that
+# `OcpiVersionFetcher` implements for the credentials registration fetch-back.
+# Default features only (no `axum`) — we need just the trait, not the routers.
+ocpi-server.workspace = true
 reqwest.workspace = true
 url.workspace = true
 thiserror.workspace = true
