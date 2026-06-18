@@ -17,10 +17,11 @@ use ocpi_server::{FetchError, FetchFuture, VersionFetcher};
 use ocpi_types::{
     transport::{CredentialToken, PaginatedParams, PaginationMeta},
     v2_2_1::{
-        AuthorizationInfo, CancelReservation, Cdr, ChargingPreferences,
-        ChargingPreferencesResponse, CommandResponse, CommandResult, CommandType, Connector,
-        Credentials, Evse, Location, LocationReferences, ReserveNow, Session, StartSession,
-        StopSession, Tariff, Token, TokenType, UnlockConnector,
+        ActiveChargingProfileResult, AuthorizationInfo, CancelReservation, Cdr,
+        ChargingPreferences, ChargingPreferencesResponse, ChargingProfileResponse,
+        ChargingProfileResult, ClearProfileResult, CommandResponse, CommandResult, CommandType,
+        Connector, Credentials, Evse, Location, LocationReferences, ReserveNow, Session,
+        SetChargingProfile, StartSession, StopSession, Tariff, Token, TokenType, UnlockConnector,
     },
     version::{Version, VersionDetails, VersionNumber},
     OcpiResponse,
@@ -58,6 +59,17 @@ fn join_segments(base: &str, segments: &[&str]) -> String {
         url.push_str(seg);
     }
     url
+}
+
+/// Build a ChargingProfiles receiver-interface object URL:
+/// `{chargingprofiles_url}/{session_id}`.
+///
+/// Per `mod_charging_profiles.asciidoc` the GET/PUT/DELETE receiver endpoints are
+/// all keyed by `session_id` as a single trailing path segment; the GET and
+/// DELETE query parameters (`duration`, `response_url`) are appended by the
+/// caller. Returns a parse error if the resulting URL is malformed.
+fn charging_profile_url(base: &str, session_id: &str) -> Result<Url, url::ParseError> {
+    Url::parse(&join_segments(base, &[session_id]))
 }
 
 /// A configured OCPI client pointed at one remote party's API base URL.
@@ -1276,6 +1288,164 @@ impl OcpiClient {
             .error_for_status()?;
         Ok(())
     }
+
+    // ── ChargingProfiles ──────────────────────────────────────────────────────
+
+    /// Request the current `ActiveChargingProfile` for a session from a CPO —
+    /// receiver interface (`GET /chargingprofiles/{session_id}`).
+    ///
+    /// `duration` is the requested profile length in seconds; `response_url` is
+    /// where the CPO will asynchronously POST the [`ActiveChargingProfileResult`].
+    /// The returned [`ChargingProfileResponse`] is only the CPO's immediate
+    /// acknowledgment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// response carries no data.
+    pub async fn get_active_charging_profile(
+        &self,
+        url: &str,
+        session_id: &str,
+        duration: u32,
+        response_url: &str,
+    ) -> Result<ChargingProfileResponse, ClientError> {
+        let mut parsed = charging_profile_url(url, session_id)?;
+        parsed
+            .query_pairs_mut()
+            .append_pair("duration", &duration.to_string())
+            .append_pair("response_url", response_url);
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<ChargingProfileResponse> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Create or update a ChargingProfile on a session at a CPO — receiver
+    /// interface (`PUT /chargingprofiles/{session_id}`).
+    ///
+    /// The `profile`'s `response_url` is where the CPO will asynchronously POST
+    /// the [`ChargingProfileResult`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// response carries no data.
+    pub async fn set_charging_profile(
+        &self,
+        url: &str,
+        session_id: &str,
+        profile: SetChargingProfile,
+    ) -> Result<ChargingProfileResponse, ClientError> {
+        let parsed = charging_profile_url(url, session_id)?;
+        let response = self
+            .http
+            .put(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(&profile)
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<ChargingProfileResponse> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Cancel/clear the ChargingProfile on a session at a CPO — receiver
+    /// interface (`DELETE /chargingprofiles/{session_id}?response_url={url}`).
+    ///
+    /// `response_url` is where the CPO will asynchronously POST the
+    /// [`ClearProfileResult`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// response carries no data.
+    pub async fn clear_charging_profile(
+        &self,
+        url: &str,
+        session_id: &str,
+        response_url: &str,
+    ) -> Result<ChargingProfileResponse, ClientError> {
+        let mut parsed = charging_profile_url(url, session_id)?;
+        parsed
+            .query_pairs_mut()
+            .append_pair("response_url", response_url);
+        let response = self
+            .http
+            .delete(parsed)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<ChargingProfileResponse> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// POST an [`ActiveChargingProfileResult`] to the Sender's `response_url`
+    /// (the async callback for a prior GET ActiveChargingProfile).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn post_active_profile_result(
+        &self,
+        response_url: &str,
+        result: ActiveChargingProfileResult,
+    ) -> Result<(), ClientError> {
+        self.post_profile_callback(response_url, &result).await
+    }
+
+    /// POST a [`ChargingProfileResult`] to the Sender's `response_url`
+    /// (the async callback for a prior PUT SetChargingProfile).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn post_charging_profile_result(
+        &self,
+        response_url: &str,
+        result: ChargingProfileResult,
+    ) -> Result<(), ClientError> {
+        self.post_profile_callback(response_url, &result).await
+    }
+
+    /// POST a [`ClearProfileResult`] to the Sender's `response_url`
+    /// (the async callback for a prior DELETE ChargingProfile).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn post_clear_profile_result(
+        &self,
+        response_url: &str,
+        result: ClearProfileResult,
+    ) -> Result<(), ClientError> {
+        self.post_profile_callback(response_url, &result).await
+    }
+
+    /// Shared POST for the three ChargingProfiles async result callbacks. The
+    /// `response_url` is opaque (defined by the Sender), so it is parsed as an
+    /// absolute URL and the result object is sent as the JSON body.
+    async fn post_profile_callback<B: ocpi_types::serde::Serialize>(
+        &self,
+        response_url: &str,
+        result: &B,
+    ) -> Result<(), ClientError> {
+        let parsed = url::Url::parse(response_url)?;
+        self.http
+            .post(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(result)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
 }
 
 // ── OcpiVersionFetcher ──────────────────────────────────────────────────────
@@ -1420,8 +1590,8 @@ impl VersionFetcher for OcpiVersionFetcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        fetch_auth_header, join_segments, parse_fetch_url, select_version, OcpiClient,
-        OcpiVersionFetcher,
+        charging_profile_url, fetch_auth_header, join_segments, parse_fetch_url, select_version,
+        OcpiClient, OcpiVersionFetcher,
     };
     use ocpi_server::{FetchError, VersionFetcher};
     use ocpi_types::{
@@ -1639,6 +1809,45 @@ mod tests {
             &["LOC1", "3256", "1"],
         );
         assert!(url::Url::parse(&url).is_ok());
+    }
+
+    // ── ChargingProfiles URL building ─────────────────────────────────────────
+
+    #[test]
+    fn charging_profile_url_appends_session_id() {
+        let url = charging_profile_url("https://cpo.example/ocpi/2.2.1/chargingprofiles", "1234")
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://cpo.example/ocpi/2.2.1/chargingprofiles/1234"
+        );
+    }
+
+    #[test]
+    fn charging_profile_url_trims_trailing_slash() {
+        let url = charging_profile_url("https://cpo.example/ocpi/2.2.1/chargingprofiles/", "1234")
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://cpo.example/ocpi/2.2.1/chargingprofiles/1234"
+        );
+    }
+
+    #[test]
+    fn charging_profile_url_supports_query_params() {
+        // GET appends duration + response_url; DELETE appends response_url only.
+        let mut url =
+            charging_profile_url("https://cpo.example/ocpi/2.2.1/chargingprofiles", "1234")
+                .unwrap();
+        url.query_pairs_mut()
+            .append_pair("duration", "900")
+            .append_pair("response_url", "https://msp.example/cb?id=5678");
+        assert_eq!(url.query_pairs().count(), 2);
+        assert_eq!(
+            url.path(),
+            "/ocpi/2.2.1/chargingprofiles/1234",
+            "query params must not corrupt the path"
+        );
     }
 
     // ── OcpiVersionFetcher ──────────────────────────────────────────────────────

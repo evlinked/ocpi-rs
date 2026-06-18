@@ -12,10 +12,12 @@
 
 use ocpi_types::{
     v2_2_1::{
-        AuthorizationInfo, CancelReservation, Cdr, ClientInfo, CommandResponse,
-        CommandResponseType, CommandResult, CommandType, Connector, Credentials, Evse, Location,
-        LocationReferences, ReserveNow, Session, StartSession, StopSession, Tariff, Token,
-        TokenType, UnlockConnector,
+        ActiveChargingProfileResult, AuthorizationInfo, CancelReservation, Cdr,
+        ChargingProfileResponse, ChargingProfileResponseType, ChargingProfileResult,
+        ClearProfileResult, ClientInfo, CommandResponse, CommandResponseType, CommandResult,
+        CommandType, Connector, Credentials, Evse, Location, LocationReferences, ReserveNow,
+        Session, SetChargingProfile, StartSession, StopSession, Tariff, Token, TokenType,
+        UnlockConnector,
     },
     version::{Endpoint, Version, VersionDetails, VersionNumber},
     DateTime, OcpiStatusCode, Utc,
@@ -1623,6 +1625,182 @@ impl CommandsHandler for CommandsConfig {
     }
 }
 
+// ── ChargingProfilesHandler ───────────────────────────────────────────────────
+
+/// Handles the OCPI ChargingProfiles module endpoints.
+///
+/// Implements the **receiver** interface (typically the CPO — receives
+/// ChargingProfile requests for an ongoing session) and the **sender** interface
+/// (typically the SCSP/eMSP — receives the asynchronous Charge Point results).
+///
+/// Like Commands, the flow is two-phase: the Sender requests/sets/clears a
+/// profile via the receiver interface, the Receiver acknowledges immediately
+/// with a [`ChargingProfileResponse`], then asynchronously POSTs the final
+/// Charge Point result back to the `response_url` the Sender supplied.
+///
+/// Spec: `specs/ocpi/2.2.1/mod_charging_profiles.asciidoc`
+#[allow(async_fn_in_trait)]
+pub trait ChargingProfilesHandler {
+    /// Get the currently planned `ActiveChargingProfile` for a session — receiver
+    /// interface (`GET /chargingprofiles/{session_id}?duration={n}&response_url={url}`).
+    ///
+    /// The returned [`ChargingProfileResponse`] is only the Receiver's
+    /// acknowledgment; the `ActiveChargingProfileResult` is delivered later via
+    /// POST on `response_url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the request cannot be forwarded to the Charge Point.
+    async fn get_active_profile(
+        &self,
+        session_id: &str,
+        duration: u32,
+        response_url: &str,
+    ) -> Result<ChargingProfileResponse, ServerError>;
+
+    /// Create or update a ChargingProfile on a session — receiver interface
+    /// (`PUT /chargingprofiles/{session_id}`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the request cannot be forwarded to the Charge Point.
+    async fn set_charging_profile(
+        &self,
+        session_id: &str,
+        profile: SetChargingProfile,
+    ) -> Result<ChargingProfileResponse, ServerError>;
+
+    /// Cancel/clear an existing ChargingProfile on a session — receiver interface
+    /// (`DELETE /chargingprofiles/{session_id}?response_url={url}`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the request cannot be forwarded to the Charge Point.
+    async fn clear_charging_profile(
+        &self,
+        session_id: &str,
+        response_url: &str,
+    ) -> Result<ChargingProfileResponse, ServerError>;
+
+    /// Receive an asynchronous `ActiveChargingProfileResult` — sender interface
+    /// (`POST /chargingprofiles/{session_id}/activeprofile`), the result of a
+    /// prior `get_active_profile` request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the result cannot be processed.
+    async fn receive_active_profile_result(
+        &self,
+        result: ActiveChargingProfileResult,
+    ) -> Result<(), ServerError>;
+
+    /// Receive an asynchronous `ChargingProfileResult` — sender interface
+    /// (`POST /chargingprofiles/{session_id}/result`), the result of a prior
+    /// `set_charging_profile` request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the result cannot be processed.
+    async fn receive_charging_profile_result(
+        &self,
+        result: ChargingProfileResult,
+    ) -> Result<(), ServerError>;
+
+    /// Receive an asynchronous `ClearProfileResult` — sender interface
+    /// (`POST /chargingprofiles/{session_id}/clearprofile`), the result of a prior
+    /// `clear_charging_profile` request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the result cannot be processed.
+    async fn receive_clear_profile_result(
+        &self,
+        result: ClearProfileResult,
+    ) -> Result<(), ServerError>;
+}
+
+// ── ChargingProfilesConfig ────────────────────────────────────────────────────
+
+/// Stateless placeholder ChargingProfiles handler for use with
+/// [`http::charging_profiles_router`].
+///
+/// Returns [`ChargingProfileResponseType::NotSupported`] for every receiver
+/// request, and accepts (no-ops) every asynchronous result callback. Replace it
+/// with a concrete bridge implementation when real CPO/OCPP smart-charging
+/// integration is needed: implement [`ChargingProfilesHandler`] on your own type
+/// and wire it to an axum state of `Arc<YourType>`.
+#[derive(Debug, Default)]
+pub struct ChargingProfilesConfig;
+
+impl ChargingProfilesConfig {
+    /// Create a new `ChargingProfilesConfig` placeholder.
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Returns the default "not supported" [`ChargingProfileResponse`].
+    ///
+    /// Used by the placeholder implementation and useful as a starting point
+    /// when overriding specific receiver methods.
+    #[must_use]
+    pub fn not_supported_response() -> ChargingProfileResponse {
+        ChargingProfileResponse {
+            result: ChargingProfileResponseType::NotSupported,
+            timeout: 0,
+        }
+    }
+}
+
+#[allow(async_fn_in_trait)]
+impl ChargingProfilesHandler for ChargingProfilesConfig {
+    async fn get_active_profile(
+        &self,
+        _session_id: &str,
+        _duration: u32,
+        _response_url: &str,
+    ) -> Result<ChargingProfileResponse, ServerError> {
+        Ok(Self::not_supported_response())
+    }
+
+    async fn set_charging_profile(
+        &self,
+        _session_id: &str,
+        _profile: SetChargingProfile,
+    ) -> Result<ChargingProfileResponse, ServerError> {
+        Ok(Self::not_supported_response())
+    }
+
+    async fn clear_charging_profile(
+        &self,
+        _session_id: &str,
+        _response_url: &str,
+    ) -> Result<ChargingProfileResponse, ServerError> {
+        Ok(Self::not_supported_response())
+    }
+
+    async fn receive_active_profile_result(
+        &self,
+        _result: ActiveChargingProfileResult,
+    ) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    async fn receive_charging_profile_result(
+        &self,
+        _result: ChargingProfileResult,
+    ) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    async fn receive_clear_profile_result(
+        &self,
+        _result: ClearProfileResult,
+    ) -> Result<(), ServerError> {
+        Ok(())
+    }
+}
+
 // ── HubClientInfoHandler ──────────────────────────────────────────────────────
 
 /// Handles the OCPI HubClientInfo module endpoints.
@@ -2368,18 +2546,20 @@ pub mod http {
         envelope::{OcpiPaged, OcpiResponse},
         transport::{CredentialToken, PaginatedParams},
         v2_2_1::{
-            AuthorizationInfo, CancelReservation, Cdr, ClientInfo, CommandResponse, CommandResult,
-            CommandType, Connector, Credentials, Evse, Location, LocationReferences, ReserveNow,
-            Session, StartSession, StopSession, Tariff, Token, TokenType, UnlockConnector,
+            ActiveChargingProfileResult, AuthorizationInfo, CancelReservation, Cdr,
+            ChargingProfileResponse, ChargingProfileResult, ClearProfileResult, ClientInfo,
+            CommandResponse, CommandResult, CommandType, Connector, Credentials, Evse, Location,
+            LocationReferences, ReserveNow, Session, SetChargingProfile, StartSession, StopSession,
+            Tariff, Token, TokenType, UnlockConnector,
         },
         version::{VersionDetails, VersionNumber},
         OcpiStatusCode,
     };
 
     use crate::{
-        token_type_str, CdrsConfig, CommandsConfig, CommandsHandler, CredentialsConfig,
-        HubClientInfoConfig, LocationsConfig, ServerError, SessionsConfig, TariffsConfig,
-        TokensConfig, VersionsConfig,
+        token_type_str, CdrsConfig, ChargingProfilesConfig, ChargingProfilesHandler,
+        CommandsConfig, CommandsHandler, CredentialsConfig, HubClientInfoConfig, LocationsConfig,
+        ServerError, SessionsConfig, TariffsConfig, TokensConfig, VersionsConfig,
     };
 
     // ── Versions ──────────────────────────────────────────────────────────────
@@ -3183,6 +3363,170 @@ pub mod http {
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(OcpiResponse::<CommandResult>::error(
+                    e.status_code(),
+                    e.to_string(),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    // ── ChargingProfiles ────────────────────────────────────────────────────────
+
+    /// Query parameters for the receiver `GET /chargingprofiles/{session_id}`.
+    #[derive(ocpi_types::serde::Deserialize)]
+    #[serde(crate = "ocpi_types::serde")]
+    struct GetActiveProfileQuery {
+        duration: u32,
+        response_url: String,
+    }
+
+    /// Query parameter for the receiver `DELETE /chargingprofiles/{session_id}`.
+    #[derive(ocpi_types::serde::Deserialize)]
+    #[serde(crate = "ocpi_types::serde")]
+    struct ClearProfileQuery {
+        response_url: String,
+    }
+
+    /// Build an axum router for the OCPI ChargingProfiles module.
+    ///
+    /// This is a **Functional Module** — OCPI routing headers are required on all
+    /// calls (attach them at the host layer; the router does not enforce them).
+    ///
+    /// Receiver interface (typically CPO):
+    /// - `GET    /chargingprofiles/{session_id}?duration={n}&response_url={url}`
+    /// - `PUT    /chargingprofiles/{session_id}` — body [`SetChargingProfile`]
+    /// - `DELETE /chargingprofiles/{session_id}?response_url={url}`
+    ///
+    /// Sender interface (typically SCSP/eMSP — async result callbacks):
+    /// - `POST   /chargingprofiles/{session_id}/activeprofile` — [`ActiveChargingProfileResult`]
+    /// - `POST   /chargingprofiles/{session_id}/result` — [`ChargingProfileResult`]
+    /// - `POST   /chargingprofiles/{session_id}/clearprofile` — [`ClearProfileResult`]
+    ///
+    /// The default [`ChargingProfilesConfig`] responds `NOT_SUPPORTED` to every
+    /// receiver request and accepts every result callback.
+    pub fn charging_profiles_router(config: Arc<ChargingProfilesConfig>) -> Router {
+        Router::new()
+            .route(
+                "/chargingprofiles/{session_id}",
+                get(cp_get_active)
+                    .put(cp_set_profile)
+                    .delete(cp_clear_profile),
+            )
+            .route(
+                "/chargingprofiles/{session_id}/activeprofile",
+                post(cp_receive_active_result),
+            )
+            .route(
+                "/chargingprofiles/{session_id}/result",
+                post(cp_receive_profile_result),
+            )
+            .route(
+                "/chargingprofiles/{session_id}/clearprofile",
+                post(cp_receive_clear_result),
+            )
+            .with_state(config)
+    }
+
+    async fn cp_get_active(
+        State(cfg): State<Arc<ChargingProfilesConfig>>,
+        Path(session_id): Path<String>,
+        Query(q): Query<GetActiveProfileQuery>,
+    ) -> Response {
+        match cfg
+            .get_active_profile(&session_id, q.duration, &q.response_url)
+            .await
+        {
+            Ok(resp) => Json(OcpiResponse::success(resp)).into_response(),
+            Err(e) => cp_error_response(&e),
+        }
+    }
+
+    async fn cp_set_profile(
+        State(cfg): State<Arc<ChargingProfilesConfig>>,
+        Path(session_id): Path<String>,
+        Json(profile): Json<SetChargingProfile>,
+    ) -> Response {
+        match cfg.set_charging_profile(&session_id, profile).await {
+            Ok(resp) => Json(OcpiResponse::success(resp)).into_response(),
+            Err(e) => cp_error_response(&e),
+        }
+    }
+
+    async fn cp_clear_profile(
+        State(cfg): State<Arc<ChargingProfilesConfig>>,
+        Path(session_id): Path<String>,
+        Query(q): Query<ClearProfileQuery>,
+    ) -> Response {
+        match cfg
+            .clear_charging_profile(&session_id, &q.response_url)
+            .await
+        {
+            Ok(resp) => Json(OcpiResponse::success(resp)).into_response(),
+            Err(e) => cp_error_response(&e),
+        }
+    }
+
+    /// Shared error mapping for the receiver methods (all return `ChargingProfileResponse`).
+    fn cp_error_response(e: &ServerError) -> Response {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(OcpiResponse::<ChargingProfileResponse>::error(
+                e.status_code(),
+                e.to_string(),
+            )),
+        )
+            .into_response()
+    }
+
+    async fn cp_receive_active_result(
+        State(cfg): State<Arc<ChargingProfilesConfig>>,
+        Path(_session_id): Path<String>,
+        Json(result): Json<ActiveChargingProfileResult>,
+    ) -> Response {
+        match cfg.receive_active_profile_result(result).await {
+            Ok(()) => {
+                Json(OcpiResponse::<ActiveChargingProfileResult>::success_empty()).into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<ActiveChargingProfileResult>::error(
+                    e.status_code(),
+                    e.to_string(),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn cp_receive_profile_result(
+        State(cfg): State<Arc<ChargingProfilesConfig>>,
+        Path(_session_id): Path<String>,
+        Json(result): Json<ChargingProfileResult>,
+    ) -> Response {
+        match cfg.receive_charging_profile_result(result).await {
+            Ok(()) => Json(OcpiResponse::<ChargingProfileResult>::success_empty()).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<ChargingProfileResult>::error(
+                    e.status_code(),
+                    e.to_string(),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn cp_receive_clear_result(
+        State(cfg): State<Arc<ChargingProfilesConfig>>,
+        Path(_session_id): Path<String>,
+        Json(result): Json<ClearProfileResult>,
+    ) -> Response {
+        match cfg.receive_clear_profile_result(result).await {
+            Ok(()) => Json(OcpiResponse::<ClearProfileResult>::success_empty()).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<ClearProfileResult>::error(
                     e.status_code(),
                     e.to_string(),
                 )),
@@ -4182,6 +4526,23 @@ mod tests {
     #[test]
     fn commands_config_new_constructs_without_panic() {
         let _cfg = CommandsConfig::new();
+    }
+
+    // ── ChargingProfilesConfig tests ──────────────────────────────────────────
+
+    #[test]
+    fn charging_profiles_config_not_supported_response_has_correct_fields() {
+        let resp = ChargingProfilesConfig::not_supported_response();
+        assert_eq!(
+            resp.result,
+            ocpi_types::v2_2_1::ChargingProfileResponseType::NotSupported
+        );
+        assert_eq!(resp.timeout, 0);
+    }
+
+    #[test]
+    fn charging_profiles_config_new_constructs_without_panic() {
+        let _cfg = ChargingProfilesConfig::new();
     }
 
     // ── HubClientInfoConfig tests ─────────────────────────────────────────────
