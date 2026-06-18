@@ -669,6 +669,7 @@ dependencies = [
 name = "ocpi-client"
 version = "0.0.0"
 dependencies = [
+ "ocpi-server",
  "ocpi-types",
  "reqwest",
  "thiserror",
