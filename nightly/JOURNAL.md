@@ -39,9 +39,14 @@ result, what worked, what to try next.
 - **Real bug surfaced (out of scope, follow-up filed):** the credentials server
   keys the registration by the **POST bearer token** (bootstrap Token A) rather
   than the issued **Token C**. Per OCPI 2.2.1 the eMSP must present Token C on
-  subsequent calls and Token A must be invalidated. The test documents this and
-  reuses Token A for the follow-up GET to match current behavior. Filed as a
-  `bug` issue for owner review.
+  subsequent calls and Token A must be invalidated. Filed as `bug` #76.
+- **Update (run 16, same night):** #76 is fixed by #78 (server now keys the
+  registry by Token C and burns Token A on a successful POST). Per the owner's
+  review note on the PR, this smoke test is **stacked on #78** (merged its branch
+  in; PR base retargeted to `nightly/2026-06-19-issue-76`) and the follow-up
+  `GET /credentials` now bears **Token C** (a fresh `OcpiClient` — the token is
+  fixed at construction) and asserts the burned **Token A → 401**. The inline
+  NOTE is dropped. Both tests still green.
 - **Next:** the remaining e2e smoke tests #32 (M3 Locations), #71 (M4
   Sessions/CDRs), #72 (M5 Tariffs/Tokens) — the harness pattern + dev-deps from
   this PR now exist to copy. Or **#70** (README milestone/matrix sync, docs-only,

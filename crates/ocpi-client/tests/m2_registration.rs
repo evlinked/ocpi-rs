@@ -19,7 +19,9 @@
 //!   2. `POST /credentials` on B carrying A's own credentials (Token B + A's
 //!      `/versions` URL). B fetches back against A, registers, and returns its
 //!      own credentials carrying Token C.
-//!   3. A subsequent `GET /credentials` returns B's credentials with HTTP 200.
+//!   3. The Sender switches to the issued Token C: a `GET /credentials` bearing
+//!      Token C returns B's credentials with HTTP 200, while the now-burned
+//!      bootstrap Token A is rejected (HTTP 401).
 //!
 //! This is the live transport counterpart to the data-contract test in
 //! `ocpi-types/tests/credentials_handshake_2_2_1.rs`.
@@ -170,22 +172,32 @@ async fn m2_registration_bootstrap_end_to_end() {
     );
     assert_eq!(exchanged.roles[0].role, Role::Cpo);
 
-    // ── Step 3: a subsequent GET /credentials returns 200 with B's creds. ───
-    // NOTE: the current server keys the registration by the POST *bearer*
-    // (Token A) rather than the issued Token C, so the follow-up GET reuses
-    // Token A. Per OCPI 2.2.1 the eMSP should switch to Token C and Token A
-    // should be invalidated — tracked as a server follow-up, out of scope here.
-    let fetched = client
+    // ── Step 3: subsequent requests authenticate with Token C, not Token A. ──
+    // Per OCPI 2.2.1 §Registration the Sender switches to the issued Token C for
+    // every request after registration, and the bootstrap Token A "MAY no longer
+    // be used". The eMSP models this by building a fresh client bearing Token C
+    // (the token has no setter — it is fixed at construction, mirroring a real
+    // client that re-derives its auth from the freshly exchanged credentials).
+    let client_c = OcpiClient::new(url::Url::parse(&format!("{b_base}/")).unwrap(), TOKEN_C);
+    let fetched = client_c
         .get_credentials(&credentials_url)
         .await
-        .expect("GET /credentials should return 200 for a registered party");
+        .expect("GET /credentials with Token C should return 200");
     assert_eq!(fetched, b_credentials, "GET echoes B's own credentials");
 
-    // A second POST under the same bearer must be rejected (already registered).
+    // The bootstrap Token A is burned: a GET presenting it must be rejected.
+    let stale = client.get_credentials(&credentials_url).await;
+    assert!(
+        stale.is_err(),
+        "GET /credentials with the burned bootstrap Token A must be unauthorized (HTTP 401)"
+    );
+
+    // A second POST must be rejected — Token C is already registered, so the
+    // Sender must PUT to rotate rather than re-POST (HTTP 405).
     let reregister = client.register(&credentials_url, &a_credentials).await;
     assert!(
         reregister.is_err(),
-        "re-POST under an already-registered token must fail (HTTP 405)"
+        "re-POST after registration must fail (HTTP 405 already registered)"
     );
 }
 
