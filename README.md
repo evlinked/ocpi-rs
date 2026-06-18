@@ -59,16 +59,18 @@ cargo run -p ocpi-cli -- validate ./response.json
 
 Each milestone maps to a GitHub milestone and a release. OCPI **2.2.1** is the primary production target; older and newer versions follow.
 
-- [ ] **M0** — Bootstrap: CI, security, governance, docs, vendored specs
-- [ ] **M1** — Core foundation: envelope, status codes, transport headers, pagination, common types — `v0.1.0`
-- [ ] **M2** — Versions + Credentials/Registration handshake (2.2.1) — `v0.2.0`
-- [ ] **M3** — Locations (2.2.1) — `v0.3.0`
-- [ ] **M4** — Sessions + CDRs (2.2.1) — `v0.4.0`
-- [ ] **M5** — Tariffs + Tokens (2.2.1) — `v0.5.0`
-- [ ] **M6** — Commands + ChargingProfiles + HubClientInfo → **OCPI 2.2.1 complete** — `v1.0.0`
+- [x] **M0** — Bootstrap: CI, security, governance, docs, vendored specs
+- [x] **M1** — Core foundation: envelope, status codes, transport headers, pagination, common types — `v0.1.0`
+- [x] **M2** — Versions + Credentials/Registration handshake (2.2.1) — `v0.2.0`
+- [x] **M3** — Locations (2.2.1) — `v0.3.0`
+- [x] **M4** — Sessions + CDRs (2.2.1) — `v0.4.0`
+- [x] **M5** — Tariffs + Tokens (2.2.1) — `v0.5.0`
+- [x] **M6** — Commands + ChargingProfiles + HubClientInfo → **OCPI 2.2.1 complete** ✅ — `v1.0.0`
 - [ ] **M7** — OCPI 2.1.1 (+ 2.2 / 2.0 back-coverage) — `v1.1.0`
 - [ ] **M8** — OCPI 2.3.0 (Payments, terminals, new fields) — `v1.2.0`
 - [ ] **M9** — Conformance, fuzzing, docs site, 3.0 forward-scaffold — `v1.3.0+`
+
+> **OCPI 2.2.1 is feature-complete** across `ocpi-types`, `ocpi-client`, and `ocpi-server` (all 10 modules: types + sender methods + receiver handlers/routers). Remaining 2.2.1 work is non-blocking polish — end-to-end smoke tests ([#23](https://github.com/evlinked/ocpi-rs/issues/23), [#32](https://github.com/evlinked/ocpi-rs/issues/32), [#71](https://github.com/evlinked/ocpi-rs/issues/71), [#72](https://github.com/evlinked/ocpi-rs/issues/72)) and the ChargingProfiles Sender PUT method ([#75](https://github.com/evlinked/ocpi-rs/issues/75)).
 
 ## Module × version support matrix
 
@@ -78,15 +80,17 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 |---|:--:|:--:|:--:|
 | Versions | ☐ | ☑ | ☐ |
 | Credentials | ☐ | ☑ | ☐ |
-| Locations | ☐ | ☐ | ☐ |
-| Sessions | ☐ | ☐ | ☐ |
-| CDRs | ☐ | ☐ | ☐ |
-| Tariffs | ☐ | ☐ | ☐ |
-| Tokens | ☐ | ☐ | ☐ |
-| Commands | ☐ | ☐ | ☐ |
-| ChargingProfiles | — | ☐ | ☐ |
-| HubClientInfo | — | ☐ | ☐ |
+| Locations | ☐ | ☑ | ☐ |
+| Sessions | ☐ | ☑ | ☐ |
+| CDRs | ☐ | ☑ | ☐ |
+| Tariffs | ☐ | ☑ | ☐ |
+| Tokens | ☐ | ☑ | ☐ |
+| Commands | ☐ | ☑ | ☐ |
+| ChargingProfiles | — | ☑ | ☐ |
+| HubClientInfo | — | ☑ | ☐ |
 | Payments | — | — | ☐ |
+
+☑ = types + client sender methods + server receiver handler/router shipped for 2.2.1. The ChargingProfiles **Sender** PUT push ([#75](https://github.com/evlinked/ocpi-rs/issues/75)) is a tracked follow-up.
 
 ## How this repo is built
 
