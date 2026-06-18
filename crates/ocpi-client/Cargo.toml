@@ -20,3 +20,13 @@ ocpi-server.workspace = true
 reqwest.workspace = true
 url.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# Integration tests stand up real in-process axum servers on a loopback socket
+# and drive them through `OcpiClient`. The `axum` feature pulls in the
+# ready-made receiver routers; `tokio`'s `net` feature supplies the
+# `TcpListener` the servers bind. Test-only — no production dep-tree impact.
+ocpi-server = { workspace = true, features = ["axum"] }
+ocpi-types.workspace = true
+axum.workspace = true
+tokio = { workspace = true, features = ["net"] }
