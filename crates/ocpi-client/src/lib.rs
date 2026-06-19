@@ -19,9 +19,10 @@ use ocpi_types::{
     v2_2_1::{
         ActiveChargingProfileResult, AuthorizationInfo, CancelReservation, Cdr,
         ChargingPreferences, ChargingPreferencesResponse, ChargingProfileResponse,
-        ChargingProfileResult, ClearProfileResult, CommandResponse, CommandResult, CommandType,
-        Connector, Credentials, Evse, Location, LocationReferences, ReserveNow, Session,
-        SetChargingProfile, StartSession, StopSession, Tariff, Token, TokenType, UnlockConnector,
+        ChargingProfileResult, ClearProfileResult, ClientInfo, CommandResponse, CommandResult,
+        CommandType, Connector, Credentials, Evse, Location, LocationReferences, ReserveNow,
+        Session, SetChargingProfile, StartSession, StopSession, Tariff, Token, TokenType,
+        UnlockConnector,
     },
     version::{Version, VersionDetails, VersionNumber},
     OcpiResponse,
@@ -1445,6 +1446,154 @@ impl OcpiClient {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+
+    // ── HubClientInfo (2.2.1 §mod_hub_client_info) ─────────────────────────
+    //
+    // HubClientInfo is a *Configuration Module*: the OCPI routing headers
+    // (`OCPI-to/from-party-id/country-code`) are NOT sent on these endpoints,
+    // unlike the Locations/Sessions/etc. sender methods (see #64). Only the
+    // `Authorization` token is carried.
+
+    /// Push a single `ClientInfo` to a connected party's **Receiver** interface
+    /// (`PUT <url>/{country_code}/{party_id}`).
+    ///
+    /// Used by the Hub: whenever a party's connection status changes, the Hub
+    /// notifies every other connected party by upserting the changed
+    /// `ClientInfo` on that party's `clientinfo` endpoint.
+    ///
+    /// `url` is the party's `clientinfo` endpoint base; the `{country_code}` and
+    /// `{party_id}` path segments are appended automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// remote responds with a non-success status.
+    ///
+    /// Spec: `mod_hub_client_info.asciidoc` — Receiver Interface, PUT.
+    pub async fn put_client_info(
+        &self,
+        url: &str,
+        country_code: &str,
+        party_id: &str,
+        info: &ClientInfo,
+    ) -> Result<(), ClientError> {
+        let endpoint = format!(
+            "{}/{}/{}",
+            url.trim_end_matches('/'),
+            country_code,
+            party_id
+        );
+        self.http
+            .put(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .json(info)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Retrieve a single `ClientInfo` entry from the Hub's **Sender** interface
+    /// (`GET <url>/{country_code}/{party_id}`).
+    ///
+    /// `url` is the Hub's `clientinfo` endpoint base; the `{country_code}` and
+    /// `{party_id}` path segments are appended automatically.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the Hub returns OCPI `2003` or HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    /// - [`ClientError`] on any other transport or status failure.
+    ///
+    /// Spec: `mod_hub_client_info.asciidoc` — Sender Interface, GET (single).
+    pub async fn get_client_info(
+        &self,
+        url: &str,
+        country_code: &str,
+        party_id: &str,
+    ) -> Result<ClientInfo, ClientError> {
+        let endpoint = format!(
+            "{}/{}/{}",
+            url.trim_end_matches('/'),
+            country_code,
+            party_id
+        );
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<ClientInfo> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Retrieve the paginated `ClientInfo` list from the Hub's **Sender**
+    /// interface (`GET <url>`), returning the page plus its [`PaginationMeta`].
+    ///
+    /// Follows the same query-param and pagination-header handling as
+    /// [`OcpiClient::get_sessions`] / [`OcpiClient::get_tokens`]; use
+    /// [`PaginationMeta::next_url`] to retrieve subsequent pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// envelope carries no data.
+    ///
+    /// Spec: `mod_hub_client_info.asciidoc` — Sender Interface, GET (list).
+    pub async fn get_client_infos(
+        &self,
+        url: &str,
+        params: &PaginatedParams,
+    ) -> Result<(Vec<ClientInfo>, PaginationMeta), ClientError> {
+        let mut req = self
+            .http
+            .get(url::Url::parse(url)?)
+            .header("Authorization", self.auth_header_value());
+        if let Some(df) = params.date_from {
+            req = req.query(&[("date_from", df.to_rfc3339())]);
+        }
+        if let Some(dt) = params.date_to {
+            req = req.query(&[("date_to", dt.to_rfc3339())]);
+        }
+        if let Some(off) = params.offset {
+            req = req.query(&[("offset", off.to_string())]);
+        }
+        if let Some(lim) = params.limit {
+            req = req.query(&[("limit", lim.to_string())]);
+        }
+        let response = req.send().await?.error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<ClientInfo>> = response.json().await?;
+        let infos = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((infos, meta))
     }
 }
 
