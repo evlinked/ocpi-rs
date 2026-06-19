@@ -12,8 +12,8 @@
 
 use ocpi_types::{
     v2_2_1::{
-        ActiveChargingProfileResult, AuthorizationInfo, CancelReservation, Cdr,
-        ChargingProfileResponse, ChargingProfileResponseType, ChargingProfileResult,
+        ActiveChargingProfile, ActiveChargingProfileResult, AuthorizationInfo, CancelReservation,
+        Cdr, ChargingProfileResponse, ChargingProfileResponseType, ChargingProfileResult,
         ClearProfileResult, ClientInfo, CommandResponse, CommandResponseType, CommandResult,
         CommandType, Connector, Credentials, Evse, Location, LocationReferences, ReserveNow,
         Session, SetChargingProfile, StartSession, StopSession, Tariff, Token, TokenType,
@@ -1734,6 +1734,28 @@ pub trait ChargingProfilesHandler {
         &self,
         result: ClearProfileResult,
     ) -> Result<(), ServerError>;
+
+    /// Receive a proactively-pushed `ActiveChargingProfile` update — sender
+    /// interface (`PUT /chargingprofiles/{session_id}`).
+    ///
+    /// The Receiver (typically CPO) calls this whenever it learns the
+    /// `ActiveChargingProfile` for an ongoing session has changed — but only once
+    /// the Sender has at least once successfully set a profile for that session
+    /// via the receiver `PUT` (`SetChargingProfile`). Unlike the three `POST`
+    /// result callbacks, this is *not* a response to a prior Sender request; it is
+    /// an unsolicited update keyed by `session_id`.
+    ///
+    /// Spec: `mod_charging_profiles.asciidoc` §Sender Interface,
+    /// `mod_charging_profiles_msp_put_method`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the update cannot be processed.
+    async fn receive_active_profile_update(
+        &self,
+        session_id: &str,
+        profile: ActiveChargingProfile,
+    ) -> Result<(), ServerError>;
 }
 
 // ── ChargingProfilesConfig ────────────────────────────────────────────────────
@@ -1813,6 +1835,14 @@ impl ChargingProfilesHandler for ChargingProfilesConfig {
     async fn receive_clear_profile_result(
         &self,
         _result: ClearProfileResult,
+    ) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    async fn receive_active_profile_update(
+        &self,
+        _session_id: &str,
+        _profile: ActiveChargingProfile,
     ) -> Result<(), ServerError> {
         Ok(())
     }
@@ -2556,18 +2586,19 @@ pub mod http {
         extract::{Path, Query, State},
         http::{HeaderMap, StatusCode},
         response::{IntoResponse, Response},
-        routing::{get, post},
+        routing::{get, post, put},
         Json, Router,
     };
     use ocpi_types::{
         envelope::{OcpiPaged, OcpiResponse},
         transport::{CredentialToken, PaginatedParams},
         v2_2_1::{
-            ActiveChargingProfileResult, AuthorizationInfo, CancelReservation, Cdr,
-            ChargingProfileResponse, ChargingProfileResult, ClearProfileResult, ClientInfo,
-            CommandResponse, CommandResult, CommandType, Connector, Credentials, Evse, Location,
-            LocationReferences, ReserveNow, Session, SetChargingProfile, StartSession, StopSession,
-            Tariff, Token, TokenType, UnlockConnector,
+            ActiveChargingProfile, ActiveChargingProfileResult, AuthorizationInfo,
+            CancelReservation, Cdr, ChargingProfileResponse, ChargingProfileResult,
+            ClearProfileResult, ClientInfo, CommandResponse, CommandResult, CommandType, Connector,
+            Credentials, Evse, Location, LocationReferences, ReserveNow, Session,
+            SetChargingProfile, StartSession, StopSession, Tariff, Token, TokenType,
+            UnlockConnector,
         },
         version::{VersionDetails, VersionNumber},
         OcpiStatusCode,
@@ -3440,6 +3471,12 @@ pub mod http {
     ///
     /// The default [`ChargingProfilesConfig`] responds `NOT_SUPPORTED` to every
     /// receiver request and accepts every result callback.
+    ///
+    /// The Sender's proactive `ActiveChargingProfile`-update `PUT` is **not**
+    /// mounted here — it shares the `PUT /chargingprofiles/{session_id}` path
+    /// with the receiver `SetChargingProfile` `PUT` but carries a different body
+    /// and is implemented by a different market role. Mount
+    /// [`charging_profiles_sender_router`] for the SCSP/eMSP Sender interface.
     pub fn charging_profiles_router(config: Arc<ChargingProfilesConfig>) -> Router {
         Router::new()
             .route(
@@ -3562,6 +3599,70 @@ pub mod http {
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(OcpiResponse::<ClearProfileResult>::error(
+                    e.status_code(),
+                    e.to_string(),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    /// Build an axum router for the OCPI ChargingProfiles module **Sender
+    /// interface** (typically implemented by an SCSP/eMSP).
+    ///
+    /// The Sender interface receives the three asynchronous Charge Point result
+    /// callbacks *and* the proactive `ActiveChargingProfile` updates the Receiver
+    /// (typically CPO) pushes:
+    /// - `PUT  /chargingprofiles/{session_id}` — body [`ActiveChargingProfile`]
+    /// - `POST /chargingprofiles/{session_id}/activeprofile` — [`ActiveChargingProfileResult`]
+    /// - `POST /chargingprofiles/{session_id}/result` — [`ChargingProfileResult`]
+    /// - `POST /chargingprofiles/{session_id}/clearprofile` — [`ClearProfileResult`]
+    ///
+    /// This is a **separate** router from [`charging_profiles_router`] (the
+    /// Receiver/CPO interface) on purpose: the `PUT /chargingprofiles/{session_id}`
+    /// path is shared, but on the Receiver it carries a [`SetChargingProfile`] and
+    /// on the Sender an [`ActiveChargingProfile`]. The two interfaces belong to
+    /// different market roles, so a CPO mounts [`charging_profiles_router`] and an
+    /// SCSP/eMSP mounts this one — they are never mounted on the same path prefix.
+    ///
+    /// The default [`ChargingProfilesConfig`] accepts (no-ops) every callback and
+    /// update.
+    ///
+    /// Spec: `mod_charging_profiles.asciidoc` §Sender Interface.
+    pub fn charging_profiles_sender_router(config: Arc<ChargingProfilesConfig>) -> Router {
+        Router::new()
+            .route(
+                "/chargingprofiles/{session_id}",
+                put(cp_receive_active_update),
+            )
+            .route(
+                "/chargingprofiles/{session_id}/activeprofile",
+                post(cp_receive_active_result),
+            )
+            .route(
+                "/chargingprofiles/{session_id}/result",
+                post(cp_receive_profile_result),
+            )
+            .route(
+                "/chargingprofiles/{session_id}/clearprofile",
+                post(cp_receive_clear_result),
+            )
+            .with_state(config)
+    }
+
+    async fn cp_receive_active_update(
+        State(cfg): State<Arc<ChargingProfilesConfig>>,
+        Path(session_id): Path<String>,
+        Json(profile): Json<ActiveChargingProfile>,
+    ) -> Response {
+        match cfg
+            .receive_active_profile_update(&session_id, profile)
+            .await
+        {
+            Ok(()) => Json(OcpiResponse::<ActiveChargingProfile>::success_empty()).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<ActiveChargingProfile>::error(
                     e.status_code(),
                     e.to_string(),
                 )),
@@ -4710,6 +4811,45 @@ mod tests {
     #[test]
     fn charging_profiles_config_new_constructs_without_panic() {
         let _cfg = ChargingProfilesConfig::new();
+    }
+
+    /// Build a minimal `ActiveChargingProfile` for the Sender-update tests.
+    fn make_active_charging_profile() -> ocpi_types::v2_2_1::ActiveChargingProfile {
+        use ocpi_types::v2_2_1::{
+            ActiveChargingProfile, ChargingProfile, ChargingProfilePeriod, ChargingRateUnit,
+        };
+        ActiveChargingProfile {
+            start_date_time: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            charging_profile: ChargingProfile {
+                start_date_time: None,
+                duration: Some(900),
+                charging_rate_unit: ChargingRateUnit::W,
+                min_charging_rate: None,
+                charging_profile_period: vec![ChargingProfilePeriod {
+                    start_period: 0,
+                    limit: 11_000.0,
+                }],
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn charging_profiles_config_receive_active_profile_update_no_ops() {
+        let cfg = ChargingProfilesConfig::new();
+        let result = cfg
+            .receive_active_profile_update("SESSION-1", make_active_charging_profile())
+            .await;
+        assert!(
+            result.is_ok(),
+            "the placeholder Sender PUT handler must accept (no-op) the update"
+        );
+    }
+
+    #[test]
+    fn charging_profiles_sender_router_constructs_without_panic() {
+        let _router = http::charging_profiles_sender_router(std::sync::Arc::new(
+            ChargingProfilesConfig::new(),
+        ));
     }
 
     // ── HubClientInfoConfig tests ─────────────────────────────────────────────

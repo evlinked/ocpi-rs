@@ -90,7 +90,7 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 | HubClientInfo | — | ☑ | ☐ |
 | Payments | — | — | ☐ |
 
-☑ = types + client sender methods + server receiver handler/router shipped for 2.2.1. The ChargingProfiles **Sender** PUT push ([#75](https://github.com/evlinked/ocpi-rs/issues/75)) is a tracked follow-up.
+☑ = types + client sender methods + server receiver handler/router shipped for 2.2.1. The ChargingProfiles **Sender** interface — the CPO-pushes-`ActiveChargingProfile` PUT ([#75](https://github.com/evlinked/ocpi-rs/issues/75)) — is now complete via `charging_profiles_sender_router` + `OcpiClient::put_active_charging_profile`.
 
 ## How this repo is built
 
