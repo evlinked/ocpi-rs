@@ -5,6 +5,55 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-06-19 — M2 end-to-end registration smoke test (issue #23)
+
+- **Issue #23:** First live-transport smoke test of the M2 bootstrap — stand up
+  the versions + credentials receiver in-process and drive the full
+  `GET /versions` → `GET /versions/2.2.1` → `POST /credentials` sequence through
+  `OcpiClient` (no raw reqwest). P2, M2, owner-approved `nightly`. This is the
+  designated issue for introducing the e2e harness dev-deps (per LEARNINGS).
+- **Branch:** `nightly/2026-06-19-issue-23`.
+- **PR:** draft, `Closes #23`. **Touches `Cargo.toml` + `Cargo.lock`** (new
+  dev-deps) → expected `needs-human` (auto-merge gate guards `Cargo.lock`).
+- **CI (local):** `fmt --check` ✅ `clippy --all-targets -D warnings` ✅
+  `test --workspace` ✅ (2 new integration tests; 305 existing tests still green).
+  `cargo check --locked` ✅. `cargo deny` not installed in runner; only test-only
+  dev-deps added (no new packages — axum/tokio already locked).
+- **What shipped:** `crates/ocpi-client/tests/m2_registration.rs` — two
+  `#[tokio::test]`s. `m2_registration_bootstrap_end_to_end` binds **two** loopback
+  axum servers: Party A (eMSP) serves only `versions_router` so Party B's
+  registration **fetch-back** (`OcpiVersionFetcher`) can discover A's endpoints;
+  Party B (CPO) serves `versions_router.merge(credentials_router)` with
+  `CredentialsConfig::new_with_fetcher`. Asserts 2.2.1 negotiation, Token-C
+  exchange (≠ bootstrap Token A), 200 on follow-up `GET /credentials`, and 405 on
+  re-POST. `get_credentials_unauthorized_before_registration` asserts 401 pre-reg.
+  Dev-deps added to `ocpi-client`: `ocpi-server` w/ `axum` feature, `axum`,
+  `tokio` w/ `net`, `ocpi-types` (all test-only — verified absent from the
+  `--edges normal` tree).
+- **Harness trick:** split bind-then-serve (`bind()` returns the `TcpListener` +
+  its `http://127.0.0.1:PORT` origin; `serve()` spawns `axum::serve`). Binding
+  before building the router lets each server reference its **own** origin in the
+  absolute URLs it advertises (the `/versions` list + credentials endpoint),
+  which the fetch-back and client both require. `TcpListener::bind` leaves the
+  socket listening, so no readiness sleep is needed before the client calls.
+- **Real bug surfaced (out of scope, follow-up filed):** the credentials server
+  keys the registration by the **POST bearer token** (bootstrap Token A) rather
+  than the issued **Token C**. Per OCPI 2.2.1 the eMSP must present Token C on
+  subsequent calls and Token A must be invalidated. Filed as `bug` #76.
+- **Update (run 16, same night):** #76 is fixed by #78 (server now keys the
+  registry by Token C and burns Token A on a successful POST). Per the owner's
+  review note on the PR, this smoke test is **stacked on #78** (merged its branch
+  in; PR base retargeted to `nightly/2026-06-19-issue-76`) and the follow-up
+  `GET /credentials` now bears **Token C** (a fresh `OcpiClient` — the token is
+  fixed at construction) and asserts the burned **Token A → 401**. The inline
+  NOTE is dropped. Both tests still green.
+- **Next:** the remaining e2e smoke tests #32 (M3 Locations), #71 (M4
+  Sessions/CDRs), #72 (M5 Tariffs/Tokens) — the harness pattern + dev-deps from
+  this PR now exist to copy. Or **#70** (README milestone/matrix sync, docs-only,
+  auto-mergeable). Suggest **#32** next to keep extending live coverage.
+
+---
+
 ## 2026-06-18 (run 15) — M6 ChargingProfiles server handler + router + client methods (issue #57)
 
 - **Issue #57:** Add the receiver-side `ChargingProfilesHandler` + stateless

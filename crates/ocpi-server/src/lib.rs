@@ -521,6 +521,23 @@ impl CredentialsConfig {
         Ok(Some(details.endpoints))
     }
 
+    /// Invalidate `token`, removing it from the registry if present.
+    ///
+    /// Unlike [`delete`](Self::delete) this never errors on an unknown token —
+    /// it is used to burn the single-use bootstrap *Token A* once registration
+    /// completes. Per `specs/ocpi/2.2.1/credentials.asciidoc` §Registration the
+    /// Sender switches to *Token C* (the server's
+    /// [`own_credentials`](Self::own_credentials) token) for every subsequent
+    /// request, and `CREDENTIALS_TOKEN_A` "MAY no longer be used". Returns
+    /// `true` if the token was present.
+    pub fn invalidate(&self, token: &str) -> bool {
+        self.registered
+            .write()
+            .expect("lock not poisoned")
+            .remove(token)
+            .is_some()
+    }
+
     /// Remove the registration for `token`.
     ///
     /// # Errors
@@ -2697,19 +2714,34 @@ pub mod http {
             Some(t) => t,
             None => return credentials_unauthorized(),
         };
-        // Reject re-registration before running the (potentially expensive)
+        // The registry is keyed by the issued Token C (`own_credentials.token`):
+        // per spec §Registration the Sender switches to Token C for every
+        // subsequent request, so that — not the bootstrap Token A bearer — is
+        // what must authenticate afterwards. Reject re-registration (the Sender
+        // should PUT to rotate) before running the potentially expensive
         // fetch-back.
-        if cfg.is_registered(token.as_str()) {
+        if cfg.is_registered(cfg.own_credentials.token.as_str()) {
             return credentials_method_not_allowed("already registered");
         }
         // Spec §POST: the receiver fetches the sender's endpoints for the
-        // registered version. Any failure → status code 3001.
+        // registered version, authenticating with the sender's Token B
+        // (`body.token`). Any failure → status code 3001.
         let endpoints = match cfg.fetch_back(&body).await {
             Ok(endpoints) => endpoints,
             Err(_) => return credentials_unable_to_use_client(),
         };
-        match cfg.register_with_endpoints(token.as_str(), body, endpoints) {
-            Ok(()) => Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response(),
+        // Register under the issued Token C, not the bootstrap Token A bearer.
+        match cfg.register_with_endpoints(cfg.own_credentials.token.as_str(), body, endpoints) {
+            Ok(()) => {
+                // Burn the single-use bootstrap Token A: per spec it "MAY no
+                // longer be used" once the Sender holds Token C. Guard against a
+                // misconfiguration where Token C equals the bearer, which would
+                // otherwise undo the registration just made.
+                if token.as_str() != cfg.own_credentials.token.as_str() {
+                    cfg.invalidate(token.as_str());
+                }
+                Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response()
+            }
             Err(ServerError::AlreadyRegistered) => {
                 credentials_method_not_allowed("already registered")
             }
@@ -2726,7 +2758,8 @@ pub mod http {
             Some(t) => t,
             None => return credentials_unauthorized(),
         };
-        // Reject updates from unknown parties before the fetch-back.
+        // The caller authenticates with the registered Token C; reject unknown
+        // parties before the fetch-back.
         if !cfg.is_registered(token.as_str()) {
             return credentials_method_not_allowed("not registered");
         }
@@ -2735,7 +2768,9 @@ pub mod http {
             Ok(endpoints) => endpoints,
             Err(_) => return credentials_unable_to_use_client(),
         };
-        match cfg.update_with_endpoints(token.as_str(), body, endpoints) {
+        // The registration is keyed by Token C (`own_credentials.token`); update
+        // under that same key rather than the bearer.
+        match cfg.update_with_endpoints(cfg.own_credentials.token.as_str(), body, endpoints) {
             Ok(()) => Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response(),
             Err(ServerError::NotRegistered) => credentials_method_not_allowed("not registered"),
             Err(_) => credentials_server_error(),
@@ -3860,6 +3895,138 @@ pub mod http {
             ),
             "Location, EVSE, or Connector",
         )
+    }
+
+    // ── Credentials handler tests (#76) ────────────────────────────────────────
+    //
+    // Drive the axum handlers directly (no live socket) to assert the OCPI 2.2.1
+    // registration token semantics: the registry is keyed by the issued Token C
+    // (`own_credentials.token`), and the bootstrap Token A is burned on a
+    // successful POST. Spec: `specs/ocpi/2.2.1/credentials.asciidoc` §Registration.
+    #[cfg(test)]
+    mod credentials_tests {
+        use super::*;
+        use ocpi_types::{
+            common::{BusinessDetails, CiString2, CiString3, Role},
+            v2_2_1::CredentialsRole,
+            Url,
+        };
+
+        fn creds(token: &str) -> Credentials {
+            Credentials {
+                token: token.to_owned(),
+                url: Url::try_from("https://example.com/ocpi/versions").unwrap(),
+                roles: vec![CredentialsRole {
+                    role: Role::Cpo,
+                    business_details: BusinessDetails {
+                        name: "Test Party".into(),
+                        website: None,
+                        logo: None,
+                    },
+                    party_id: CiString3::try_from("EXA").unwrap(),
+                    country_code: CiString2::try_from("NL").unwrap(),
+                }],
+            }
+        }
+
+        fn auth(raw_token: &str) -> HeaderMap {
+            let mut headers = HeaderMap::new();
+            let value = CredentialToken::new(raw_token).to_header_value();
+            headers.insert("Authorization", value.parse().expect("valid header value"));
+            headers
+        }
+
+        // The server hands back Token C; the sender bootstraps with Token A and
+        // offers its own Token B in the POST body (used only for the fetch-back).
+        fn config() -> Arc<CredentialsConfig> {
+            Arc::new(CredentialsConfig::new(creds("TOKEN_C")))
+        }
+
+        #[tokio::test]
+        async fn post_registers_under_token_c_and_burns_token_a() {
+            let cfg = config();
+            let resp =
+                credentials_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B"))).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            // Registration is keyed by the issued Token C, not the bearer.
+            assert!(cfg.is_registered("TOKEN_C"));
+            // The bootstrap Token A is burned; the sender's Token B is the
+            // receiver→sender direction and never authenticates the receiver.
+            assert!(!cfg.is_registered("TOKEN_A"));
+            assert!(!cfg.is_registered("TOKEN_B"));
+        }
+
+        #[tokio::test]
+        async fn get_authenticates_with_token_c_and_rejects_token_a() {
+            let cfg = config();
+            credentials_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B"))).await;
+
+            // Token C → 200.
+            let ok = credentials_get(State(cfg.clone()), auth("TOKEN_C")).await;
+            assert_eq!(ok.status(), StatusCode::OK);
+
+            // Burned Token A → 401.
+            let unauth = credentials_get(State(cfg.clone()), auth("TOKEN_A")).await;
+            assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn get_before_registration_is_401() {
+            let cfg = config();
+            let resp = credentials_get(State(cfg.clone()), auth("TOKEN_C")).await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn re_post_after_registration_is_405() {
+            let cfg = config();
+            credentials_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B"))).await;
+            // Even a fresh bootstrap token cannot re-register once Token C is
+            // issued — the sender must PUT to rotate.
+            let resp = credentials_post(
+                State(cfg.clone()),
+                auth("TOKEN_A2"),
+                Json(creds("TOKEN_B2")),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+            assert!(cfg.is_registered("TOKEN_C"));
+        }
+
+        #[tokio::test]
+        async fn put_authenticates_with_token_c_and_rejects_burned_token_a() {
+            let cfg = config();
+            credentials_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B"))).await;
+
+            // PUT presenting Token C (the registered key) rotates the sender's
+            // credentials and stays registered under Token C.
+            let rotated = credentials_put(
+                State(cfg.clone()),
+                auth("TOKEN_C"),
+                Json(creds("TOKEN_B_NEW")),
+            )
+            .await;
+            assert_eq!(rotated.status(), StatusCode::OK);
+            assert!(cfg.is_registered("TOKEN_C"));
+
+            // PUT presenting the burned Token A is rejected as not registered.
+            let stale = credentials_put(
+                State(cfg.clone()),
+                auth("TOKEN_A"),
+                Json(creds("TOKEN_B_NEW")),
+            )
+            .await;
+            assert_eq!(stale.status(), StatusCode::METHOD_NOT_ALLOWED);
+        }
+
+        #[tokio::test]
+        async fn delete_with_token_c_unregisters() {
+            let cfg = config();
+            credentials_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B"))).await;
+            let resp = credentials_delete(State(cfg.clone()), auth("TOKEN_C")).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(!cfg.is_registered("TOKEN_C"));
+        }
     }
 }
 
