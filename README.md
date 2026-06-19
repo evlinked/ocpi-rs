@@ -83,7 +83,7 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 | Locations | ☐ | ☑ | ☐ |
 | Sessions | ☐ | ☑ | ☐ |
 | CDRs | ☐ | ☑ | ☐ |
-| Tariffs | ☐ | ☑ | ☐ |
+| Tariffs | ◑ | ☑ | ☐ |
 | Tokens | ☐ | ☑ | ☐ |
 | Commands | ☐ | ☑ | ☐ |
 | ChargingProfiles | — | ☑ | ☐ |
