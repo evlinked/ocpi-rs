@@ -669,10 +669,12 @@ dependencies = [
 name = "ocpi-client"
 version = "0.0.0"
 dependencies = [
+ "axum",
  "ocpi-server",
  "ocpi-types",
  "reqwest",
  "thiserror",
+ "tokio",
  "url",
 ]
 
