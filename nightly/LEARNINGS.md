@@ -6,6 +6,25 @@ cycle. Keep entries short and specific. Prune contradictions.
 
 ## Workflow & PR hygiene
 
+- **A draft PR is NOT shipped — the gate parks every draft.** `auto-merge-gate.yml`
+  does `if draft=true → "Draft PR — waiting"; exit 0`, and only arms squash
+  auto-merge on the `ready_for_review` event. If a run opens a PR as draft and
+  forgets to mark it ready, it sits forever with green CI and never merges. Run 17
+  found **5** such drafts piled up (#81/#82/#83/#84/#85), all green and clean. The
+  **Ship step is: mark the PR ready** (`update_pull_request draft=false`), which
+  fires the gate; you can also call `enable_pr_auto_merge SQUASH` as a backup.
+  Don't end a run leaving your own PR in draft.
+- **CI status lives in Actions check-runs, not the legacy commit-status API.**
+  `pull_request_read method=get_status` returns `total_count:0` for these PRs even
+  when CI is fully green — that endpoint reads the old statuses API, which this
+  repo doesn't use. To judge CI, use `actions_list method=list_workflow_runs`
+  (filter by `head_branch`) and read each run's `conclusion`, or
+  `pull_request_read method=get` + look at `mergeable_state`.
+- **Sync can be the whole job.** When ≥3 nightly PRs are open, draining them
+  (mark ready → gate merges) beats opening a 6th. Order merges so no two touch the
+  same file: PRs that edit the same `use …::{…}` import block (a very common
+  collision in this repo's big `lib.rs` files) will conflict — merge one, leave the
+  rest to rebase. Test-only PRs (new files under `tests/`) never collide.
 - **NEVER bundle a `.github/`/Cargo guarded-path change into a feature PR.** PRs #31
   (Locations types + MSRV) and #24 (credentials router + MSRV) each stapled an MSRV
   `.github` change onto pure-additive implementation work. Result: both got `needs-human`,

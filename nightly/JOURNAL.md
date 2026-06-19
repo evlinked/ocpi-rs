@@ -5,6 +5,44 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-06-19 (run 17) — PR-queue hygiene: drained 4 stuck draft PRs
+
+- **No new feature issue tonight.** Sync (workflow step 1) found **5 open
+  nightly PRs** — #81, #82, #83, #84, #85 — well over the "never more than 2
+  open" rule. All five were owner-authored, **green CI** (Actions check-runs all
+  `success`), and `mergeable_state: clean`, but every one was left in **draft**.
+- **Root cause:** the `auto-merge-gate` workflow explicitly parks drafts
+  (`if draft=true → "Draft PR — waiting"; exit 0`). It only arms squash
+  auto-merge on the `ready_for_review` event. Several runs earlier today opened
+  PRs and **skipped the Ship step** (mark ready / arm auto-merge), so they piled
+  up. CI being green was a red herring — the legacy commit-status API returns
+  `total_count:0` for these (CI runs as Actions *check-runs*, not statuses), so a
+  naive `get_status` check looks "pending" when it's actually green.
+- **Action:** mapped file overlaps, then marked the four mutually-conflict-free
+  PRs ready: **#81** (M3 Locations e2e, test-only), **#82** (HubClientInfo client
+  methods, `ocpi-client/src/lib.rs`), **#84** (M4 Sessions/CDRs e2e + sessions
+  `charging_preferences` route, `ocpi-server/src/lib.rs`), **#85** (M5
+  Tariffs/Tokens e2e, test-only). The gate squash-merged all four
+  (`merged_by: github-actions[bot]`). Queue **5 → 1**. Local
+  `cargo build --workspace --all-features` on the merged tree: green.
+- **#83 held (still open, draft):** ChargingProfiles Sender PUT (#75). It edits
+  the same `use ocpi_types::v2_2_1::{…}` import blocks as the now-merged #82
+  (client) and #84 (server), so it's conflicted. Left draft + commented with the
+  exact reconcile steps; did **not** push a rebase onto its branch from this
+  session (designated dev branch is `claude/dazzling-maxwell-bj1kpd`; the
+  guardrail forbids pushing to other branches without permission).
+- **What worked:** the gate is the safe mechanism — required checks still gate
+  each merge, and the disjoint-file ordering meant no merge went `dirty`.
+  Marking ready (not a manual `merge_pull_request`) keeps the owner's governance
+  in the loop.
+- **Next:** rebase/merge-main #83 to resolve the two import-block conflicts, run
+  fmt/clippy/test, mark ready → gate merges it. After that the 2.2.1 surface +
+  the full per-milestone e2e suite (M2–M5) are all on `main`; M6 ChargingProfiles
+  Sender PUT is the only loose end. Then groom M7 (2.1.1 back-coverage) for
+  owner-approved issues.
+
+---
+
 ## 2026-06-19 — M2 end-to-end registration smoke test (issue #23)
 
 - **Issue #23:** First live-transport smoke test of the M2 bootstrap — stand up

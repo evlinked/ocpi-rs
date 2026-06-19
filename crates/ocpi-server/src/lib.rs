@@ -13,11 +13,11 @@
 use ocpi_types::{
     v2_2_1::{
         ActiveChargingProfile, ActiveChargingProfileResult, AuthorizationInfo, CancelReservation,
-        Cdr, ChargingProfileResponse, ChargingProfileResponseType, ChargingProfileResult,
-        ClearProfileResult, ClientInfo, CommandResponse, CommandResponseType, CommandResult,
-        CommandType, Connector, Credentials, Evse, Location, LocationReferences, ReserveNow,
-        Session, SetChargingProfile, StartSession, StopSession, Tariff, Token, TokenType,
-        UnlockConnector,
+        Cdr, ChargingPreferences, ChargingPreferencesResponse, ChargingProfileResponse,
+        ChargingProfileResponseType, ChargingProfileResult, ClearProfileResult, ClientInfo,
+        CommandResponse, CommandResponseType, CommandResult, CommandType, Connector, Credentials,
+        Evse, Location, LocationReferences, ProfileType, ReserveNow, Session, SetChargingProfile,
+        StartSession, StopSession, Tariff, Token, TokenType, UnlockConnector,
     },
     version::{Endpoint, Version, VersionDetails, VersionNumber},
     DateTime, OcpiStatusCode, Utc,
@@ -621,6 +621,33 @@ pub trait SessionsHandler {
         session_id: &str,
         partial: ocpi_types::serde_json::Value,
     ) -> Result<(), ServerError>;
+
+    /// Evaluate the driver's [`ChargingPreferences`] for an ongoing session —
+    /// sender interface (`PUT /sessions/{session_id}/charging_preferences`).
+    ///
+    /// The Sender endpoint addresses the session by `session_id` alone (no
+    /// `country_code`/`party_id` segments). Returns the CPO's
+    /// [`ChargingPreferencesResponse`].
+    ///
+    /// The default implementation returns
+    /// [`ServerError::NotImplemented`] so existing implementors are not broken;
+    /// override it to support smart charging.
+    ///
+    /// Spec: `specs/ocpi/2.2.1/mod_sessions.asciidoc` — §Set: Charging Preferences.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when the session does not exist, or
+    /// [`ServerError::NotImplemented`] when the handler does not support
+    /// charging preferences.
+    async fn set_charging_preferences(
+        &self,
+        session_id: &str,
+        preferences: ChargingPreferences,
+    ) -> Result<ChargingPreferencesResponse, ServerError> {
+        let _ = (session_id, preferences);
+        Err(ServerError::NotImplemented("set_charging_preferences"))
+    }
 }
 
 // ── SessionsConfig ────────────────────────────────────────────────────────────
@@ -730,6 +757,56 @@ impl SessionsConfig {
             .collect();
         (page, total)
     }
+
+    /// Evaluate driver [`ChargingPreferences`] for an ongoing session, looked up
+    /// by `session_id` alone (the Sender `PUT
+    /// /sessions/{session_id}/charging_preferences` endpoint omits the
+    /// `country_code`/`party_id` segments).
+    ///
+    /// This in-memory reference store applies a deterministic default policy
+    /// modelling a CPO that needs planning input for smart-charging profiles:
+    ///
+    /// - unknown `session_id` → [`ServerError::NotFound`]
+    /// - [`ProfileType::Regular`] → [`ChargingPreferencesResponse::Accepted`]
+    ///   (no planning input needed)
+    /// - any other profile with no `departure_time` →
+    ///   [`ChargingPreferencesResponse::DepartureRequired`]
+    /// - [`ProfileType::Cheap`] / [`ProfileType::Green`] with a `departure_time`
+    ///   but no `energy_need` →
+    ///   [`ChargingPreferencesResponse::EnergyNeedRequired`]
+    /// - otherwise → [`ChargingPreferencesResponse::Accepted`]
+    ///
+    /// Real CPOs replace this by implementing
+    /// [`SessionsHandler::set_charging_preferences`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when no session has id `session_id`.
+    pub fn set_charging_preferences(
+        &self,
+        session_id: &str,
+        preferences: &ChargingPreferences,
+    ) -> Result<ChargingPreferencesResponse, ServerError> {
+        let exists = self
+            .sessions
+            .read()
+            .expect("lock not poisoned")
+            .values()
+            .any(|s| s.id.as_str() == session_id);
+        if !exists {
+            return Err(ServerError::NotFound);
+        }
+        Ok(match preferences.profile_type {
+            ProfileType::Regular => ChargingPreferencesResponse::Accepted,
+            _ if preferences.departure_time.is_none() => {
+                ChargingPreferencesResponse::DepartureRequired
+            }
+            ProfileType::Cheap | ProfileType::Green if preferences.energy_need.is_none() => {
+                ChargingPreferencesResponse::EnergyNeedRequired
+            }
+            _ => ChargingPreferencesResponse::Accepted,
+        })
+    }
 }
 
 impl Default for SessionsConfig {
@@ -779,6 +856,14 @@ impl SessionsHandler for SessionsConfig {
         partial: ocpi_types::serde_json::Value,
     ) -> Result<(), ServerError> {
         self.patch_json(country_code, party_id, session_id, partial)
+    }
+
+    async fn set_charging_preferences(
+        &self,
+        session_id: &str,
+        preferences: ChargingPreferences,
+    ) -> Result<ChargingPreferencesResponse, ServerError> {
+        self.set_charging_preferences(session_id, &preferences)
     }
 }
 
@@ -2594,11 +2679,11 @@ pub mod http {
         transport::{CredentialToken, PaginatedParams},
         v2_2_1::{
             ActiveChargingProfile, ActiveChargingProfileResult, AuthorizationInfo,
-            CancelReservation, Cdr, ChargingProfileResponse, ChargingProfileResult,
-            ClearProfileResult, ClientInfo, CommandResponse, CommandResult, CommandType, Connector,
-            Credentials, Evse, Location, LocationReferences, ReserveNow, Session,
-            SetChargingProfile, StartSession, StopSession, Tariff, Token, TokenType,
-            UnlockConnector,
+            CancelReservation, Cdr, ChargingPreferences, ChargingPreferencesResponse,
+            ChargingProfileResponse, ChargingProfileResult, ClearProfileResult, ClientInfo,
+            CommandResponse, CommandResult, CommandType, Connector, Credentials, Evse, Location,
+            LocationReferences, ReserveNow, Session, SetChargingProfile, StartSession, StopSession,
+            Tariff, Token, TokenType, UnlockConnector,
         },
         version::{VersionDetails, VersionNumber},
         OcpiStatusCode,
@@ -2842,6 +2927,10 @@ pub mod http {
         Router::new()
             .route("/sessions", get(sessions_list))
             .route(
+                "/sessions/{session_id}/charging_preferences",
+                put(sessions_charging_preferences),
+            )
+            .route(
                 "/sessions/{country_code}/{party_id}/{session_id}",
                 get(sessions_get).put(sessions_put).patch(sessions_patch),
             )
@@ -2929,6 +3018,39 @@ pub mod http {
             Err(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(OcpiResponse::<Session>::error(
+                    OcpiStatusCode::ServerError,
+                    "internal error",
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    /// `PUT /sessions/{session_id}/charging_preferences` — Sender interface.
+    ///
+    /// The eMSP submits the driver's [`ChargingPreferences`]; the CPO replies
+    /// with a [`ChargingPreferencesResponse`] inside the OCPI envelope. An
+    /// unknown `session_id` yields OCPI `2003` / HTTP 404.
+    ///
+    /// Spec: `specs/ocpi/2.2.1/mod_sessions.asciidoc` — §Set: Charging Preferences.
+    async fn sessions_charging_preferences(
+        State(cfg): State<Arc<SessionsConfig>>,
+        Path(session_id): Path<String>,
+        Json(preferences): Json<ChargingPreferences>,
+    ) -> Response {
+        match cfg.set_charging_preferences(&session_id, &preferences) {
+            Ok(response) => Json(OcpiResponse::success(response)).into_response(),
+            Err(ServerError::NotFound) => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<ChargingPreferencesResponse>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!("session {session_id} not found"),
+                )),
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<ChargingPreferencesResponse>::error(
                     OcpiStatusCode::ServerError,
                     "internal error",
                 )),
@@ -4222,6 +4344,66 @@ mod tests {
         let (items, total) = cfg.list(from, Some(to), 0, 50);
         assert_eq!(total, 1);
         assert_eq!(items[0].id.as_str(), "S001");
+    }
+
+    fn prefs(profile_type: ProfileType, departure: bool, energy: bool) -> ChargingPreferences {
+        ChargingPreferences {
+            profile_type,
+            departure_time: departure.then(|| Utc.with_ymd_and_hms(2024, 6, 1, 18, 0, 0).unwrap()),
+            energy_need: energy.then_some(30.0),
+            discharge_allowed: None,
+        }
+    }
+
+    #[test]
+    fn charging_preferences_unknown_session_is_not_found() {
+        let cfg = SessionsConfig::new();
+        let err = cfg
+            .set_charging_preferences("S404", &prefs(ProfileType::Regular, false, false))
+            .unwrap_err();
+        assert!(matches!(err, ServerError::NotFound));
+    }
+
+    #[test]
+    fn charging_preferences_regular_is_accepted_without_planning_input() {
+        let cfg = SessionsConfig::new();
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        cfg.put("NL", "CPO", "S001", make_session("S001", ts));
+        let resp = cfg
+            .set_charging_preferences("S001", &prefs(ProfileType::Regular, false, false))
+            .unwrap();
+        assert_eq!(resp, ChargingPreferencesResponse::Accepted);
+    }
+
+    #[test]
+    fn charging_preferences_smart_profile_requires_departure_then_energy() {
+        let cfg = SessionsConfig::new();
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        cfg.put("NL", "CPO", "S001", make_session("S001", ts));
+
+        // No departure_time → CPO needs it to plan.
+        let resp = cfg
+            .set_charging_preferences("S001", &prefs(ProfileType::Cheap, false, false))
+            .unwrap();
+        assert_eq!(resp, ChargingPreferencesResponse::DepartureRequired);
+
+        // Departure but no energy_need → CHEAP/GREEN need an energy target.
+        let resp = cfg
+            .set_charging_preferences("S001", &prefs(ProfileType::Green, true, false))
+            .unwrap();
+        assert_eq!(resp, ChargingPreferencesResponse::EnergyNeedRequired);
+
+        // Both present → accepted.
+        let resp = cfg
+            .set_charging_preferences("S001", &prefs(ProfileType::Cheap, true, true))
+            .unwrap();
+        assert_eq!(resp, ChargingPreferencesResponse::Accepted);
+
+        // FAST needs only a departure window, not an energy target.
+        let resp = cfg
+            .set_charging_preferences("S001", &prefs(ProfileType::Fast, true, false))
+            .unwrap();
+        assert_eq!(resp, ChargingPreferencesResponse::Accepted);
     }
 
     #[test]
