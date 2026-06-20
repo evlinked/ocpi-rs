@@ -96,9 +96,9 @@ M7 (OCPI 2.1.1) is underway: the role-less 2.1.1 version-negotiation foundation 
 
 ## How this repo is built
 
-This repo develops itself. A nightly Claude **remote routine** picks one owner-approved GitHub issue, implements it on a branch, opens a PR, and lets strict CI gate the merge. See [`nightly/PLAYBOOK.md`](nightly/PLAYBOOK.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+This repo develops itself. A nightly Claude **remote routine** picks one owner-approved GitHub issue, implements it on a branch, opens a PR, and marks it ready for review for the owner to merge under strict CI. See [`nightly/PLAYBOOK.md`](nightly/PLAYBOOK.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Governance:** only the owner is trusted. The owner's (and the nightly bot's) PRs auto-merge once all required checks are green; everyone else's PRs are reviewed and merged manually by the owner. See [CONTRIBUTING.md](CONTRIBUTING.md#governance).
+**Governance:** only the owner is trusted. The nightly bot's PRs are automatically marked ready for review (no auto-merge); the owner reviews and merges every PR once all required checks are green. See [CONTRIBUTING.md](CONTRIBUTING.md#governance).
 
 ## Specifications
 
