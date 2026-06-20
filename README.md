@@ -78,7 +78,7 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 
 | Module | 2.1.1 | 2.2.1 | 2.3.0 |
 |---|:--:|:--:|:--:|
-| Versions | ☐ | ☑ | ☐ |
+| Versions | ◑ | ☑ | ☐ |
 | Credentials | ☐ | ☑ | ☐ |
 | Locations | ☐ | ☑ | ☐ |
 | Sessions | ☐ | ☑ | ☐ |
@@ -90,13 +90,15 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 | HubClientInfo | — | ☑ | ☐ |
 | Payments | — | — | ☐ |
 
-☑ = types + client sender methods + server receiver handler/router shipped for 2.2.1. The ChargingProfiles **Sender** PUT push ([#75](https://github.com/evlinked/ocpi-rs/issues/75)) is a tracked follow-up.
+☑ = types + client sender methods + server receiver handler/router shipped for 2.2.1. The ChargingProfiles **Sender** interface — the CPO-pushes-`ActiveChargingProfile` PUT ([#75](https://github.com/evlinked/ocpi-rs/issues/75)) — is now complete via `charging_profiles_sender_router` + `OcpiClient::put_active_charging_profile`.
+
+M7 (OCPI 2.1.1) is underway: the role-less 2.1.1 version-negotiation foundation (`v2_1_1::Endpoint` / `v2_1_1::VersionDetails`, [#86](https://github.com/evlinked/ocpi-rs/issues/86)) is the first slice. Remaining 2.1.1 module types are tracked in [#87](https://github.com/evlinked/ocpi-rs/issues/87)–[#93](https://github.com/evlinked/ocpi-rs/issues/93).
 
 ## How this repo is built
 
-This repo develops itself. A nightly Claude **remote routine** picks one owner-approved GitHub issue, implements it on a branch, opens a PR, and lets strict CI gate the merge. See [`nightly/PLAYBOOK.md`](nightly/PLAYBOOK.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+This repo develops itself. A nightly Claude **remote routine** picks one owner-approved GitHub issue, implements it on a branch, opens a PR, and marks it ready for review for the owner to merge under strict CI. See [`nightly/PLAYBOOK.md`](nightly/PLAYBOOK.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Governance:** only the owner is trusted. The owner's (and the nightly bot's) PRs auto-merge once all required checks are green; everyone else's PRs are reviewed and merged manually by the owner. See [CONTRIBUTING.md](CONTRIBUTING.md#governance).
+**Governance:** only the owner is trusted. The nightly bot's PRs are automatically marked ready for review (no auto-merge); the owner reviews and merges every PR once all required checks are green. See [CONTRIBUTING.md](CONTRIBUTING.md#governance).
 
 ## Specifications
 

@@ -17,8 +17,8 @@ use ocpi_server::{FetchError, FetchFuture, VersionFetcher};
 use ocpi_types::{
     transport::{CredentialToken, PaginatedParams, PaginationMeta},
     v2_2_1::{
-        ActiveChargingProfileResult, AuthorizationInfo, CancelReservation, Cdr,
-        ChargingPreferences, ChargingPreferencesResponse, ChargingProfileResponse,
+        ActiveChargingProfile, ActiveChargingProfileResult, AuthorizationInfo, CancelReservation,
+        Cdr, ChargingPreferences, ChargingPreferencesResponse, ChargingProfileResponse,
         ChargingProfileResult, ClearProfileResult, ClientInfo, CommandResponse, CommandResult,
         CommandType, Connector, Credentials, Evse, Location, LocationReferences, ReserveNow,
         Session, SetChargingProfile, StartSession, StopSession, Tariff, Token, TokenType,
@@ -1385,6 +1385,43 @@ impl OcpiClient {
             .error_for_status()?;
         let envelope: OcpiResponse<ChargingProfileResponse> = response.json().await?;
         envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Push a changed `ActiveChargingProfile` to a Sender (typically SCSP/eMSP) —
+    /// the Receiver-side (typically CPO) call of the ChargingProfiles **Sender
+    /// interface** (`PUT /chargingprofiles/{session_id}`).
+    ///
+    /// Per spec the Receiver SHALL call this whenever it learns the
+    /// `ActiveChargingProfile` for an ongoing session has changed, *provided* the
+    /// Sender has at least once successfully set a profile for that session via
+    /// the Receiver `PUT` (`SetChargingProfile`). The response carries no data.
+    ///
+    /// Note this is the same path as [`set_charging_profile`](Self::set_charging_profile),
+    /// but the two target different market roles' interfaces: that one PUTs a
+    /// [`SetChargingProfile`] to a CPO Receiver, this one PUTs an
+    /// [`ActiveChargingProfile`] to an SCSP/eMSP Sender.
+    ///
+    /// Spec: `mod_charging_profiles.asciidoc` §Sender Interface,
+    /// `mod_charging_profiles_msp_put_method`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn put_active_charging_profile(
+        &self,
+        url: &str,
+        session_id: &str,
+        profile: ActiveChargingProfile,
+    ) -> Result<(), ClientError> {
+        let parsed = charging_profile_url(url, session_id)?;
+        self.http
+            .put(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(&profile)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
     }
 
     /// POST an [`ActiveChargingProfileResult`] to the Sender's `response_url`
