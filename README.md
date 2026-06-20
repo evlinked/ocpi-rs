@@ -78,7 +78,7 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 
 | Module | 2.1.1 | 2.2.1 | 2.3.0 |
 |---|:--:|:--:|:--:|
-| Versions | ☐ | ☑ | ☐ |
+| Versions | ◑ | ☑ | ☐ |
 | Credentials | ☐ | ☑ | ☐ |
 | Locations | ☐ | ☑ | ☐ |
 | Sessions | ☐ | ☑ | ☐ |
@@ -91,6 +91,8 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 | Payments | — | — | ☐ |
 
 ☑ = types + client sender methods + server receiver handler/router shipped for 2.2.1. The ChargingProfiles **Sender** interface — the CPO-pushes-`ActiveChargingProfile` PUT ([#75](https://github.com/evlinked/ocpi-rs/issues/75)) — is now complete via `charging_profiles_sender_router` + `OcpiClient::put_active_charging_profile`.
+
+M7 (OCPI 2.1.1) is underway: the role-less 2.1.1 version-negotiation foundation (`v2_1_1::Endpoint` / `v2_1_1::VersionDetails`, [#86](https://github.com/evlinked/ocpi-rs/issues/86)) is the first slice. Remaining 2.1.1 module types are tracked in [#87](https://github.com/evlinked/ocpi-rs/issues/87)–[#93](https://github.com/evlinked/ocpi-rs/issues/93).
 
 ## How this repo is built
 
