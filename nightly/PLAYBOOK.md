@@ -14,7 +14,8 @@ the primary target; 2.1.1, 2.2, 2.0, and 2.3.0 follow.
 
 1. **Learn.** Read this file, `LEARNINGS.md`, and the last `JOURNAL.md` entry.
 2. **Sync.** `gh pr list`. If a prior nightly PR has failing CI or review
-   comments, fixing it is tonight's job. Never keep more than 2 open nightly PRs.
+   comments, fixing it is tonight's job — run `/simplify` (gstack) on the diff
+   before you review or push the fix. Never keep more than 2 open nightly PRs.
 3. **Groom.** If the earliest open milestone has fewer than 3 well-scoped
    *owner-approved* issues, diff the vendored spec (`../specs/ocpi/<v>/`) against
    the current crates and propose new issues for the owner. On Sundays, groom
@@ -28,9 +29,11 @@ the primary target; 2.1.1, 2.2, 2.0, and 2.3.0 follow.
 7. **Verify** (must pass): `cargo fmt --all -- --check`,
    `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
    `cargo test --workspace --all-features`, `cargo deny check`.
-8. **Ship.** Open a PR: `Closes #<N>`, spec section link, test plan, known gaps.
-   Then `gh pr merge --auto --squash`. If the diff touches `.github/`, deps,
-   `LICENSE`, or `scripts/`, label `needs-human` and do **not** enable auto-merge.
+8. **Ship.** Run `/simplify` (gstack) on the diff first. Open a PR: `Closes #<N>`,
+   spec section link, test plan, known gaps. Then mark it **ready for review**
+   (`update_pull_request draft=false`) — the gate labels it `ready-for-review`
+   and the owner reviews and merges it. **Do not auto-merge.** If the diff touches
+   `.github/`, deps, `LICENSE`, or `scripts/`, label `needs-human`.
 9. **Record.** Append a `JOURNAL.md` entry and update `LEARNINGS.md` if you
    learned something durable. Include those edits in the PR.
 
