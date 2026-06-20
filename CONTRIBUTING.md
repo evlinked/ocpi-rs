@@ -45,14 +45,14 @@ cargo deny check        # cargo install --locked cargo-deny
 This project follows an **owner-trust** model. The owner is
 [@duyhuynh-vn](https://github.com/duyhuynh-vn).
 
-- **Owner / nightly-bot PRs**: auto-merge (squash) once every required status
-  check passes — `fmt`, `clippy`, `test (stable)`, `doc`, `deny`, `audit`,
-  `guardrails`. No human approval step; green CI is the gate.
-- **Everyone else's PRs**: CI runs, but the PR is **not** auto-merged. The owner
-  reviews and merges manually. A bot comment will say a maintainer will review.
+- **Owner / nightly-bot PRs**: automatically marked **ready for review** and
+  labelled `ready-for-review` once opened. Required status checks — `fmt`,
+  `clippy`, `test (stable)`, `doc`, `deny`, `audit`, `guardrails` — still gate
+  the merge, but the owner reviews and merges manually. **No auto-merge.**
+- **Everyone else's PRs**: CI runs and the PR is labelled `needs-review`. The
+  owner reviews and merges manually. A bot comment will say a maintainer will review.
 - **Risky diffs** (touching `.github/`, dependencies, `LICENSE`, release config,
-  or exceeding size caps) are labelled `needs-human` and never auto-merge, even
-  for the owner/bot.
+  or exceeding size caps) are labelled `needs-human` for owner review.
 
 `main` is protected: no direct pushes, required status checks must pass, and the
 branch must be up to date before merge.

@@ -1,25 +1,24 @@
-name: Auto-merge gate
+name: PR ready gate
 
-# Owner-trust governance:
-#   - Owner / owner-bot PRs: enable squash auto-merge (required checks then gate).
+# Owner-trust governance (no auto-merge — the owner reviews and merges):
+#   - Owner / owner-bot PRs: mark ready for review, label `ready-for-review`.
 #   - Everyone else: label `needs-review`, comment, do NOT auto-merge.
 #   - Any PR touching guarded paths or exceeding the size cap: `needs-human`.
 #
 # SECURITY: this uses `pull_request_target` (runs with repo token on PRs,
 # including forks). It MUST NOT check out or execute PR head code. It only reads
-# PR *metadata* via the GitHub API and labels/comments/enables auto-merge.
+# PR *metadata* via the GitHub API and labels/comments/marks ready for review.
 
 on:
   pull_request_target:
     types: [opened, reopened, ready_for_review, synchronize]
 
 permissions:
-  contents: write # enable auto-merge
-  pull-requests: write # label + comment
+  pull-requests: write # mark ready for review + label + comment
   issues: write # labels
 
 concurrency:
-  group: automerge-${{ github.event.pull_request.number }}
+  group: pr-ready-gate-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -58,26 +57,27 @@ jobs:
 
           echo "PR #$PR by $login (assoc=$assoc) draft=$draft additions=$additions risky=$risky trusted=$trusted"
 
-          if [ "$draft" = "true" ]; then
-            echo "Draft PR — waiting."; exit 0
-          fi
-
           if [ "$trusted" != "yes" ]; then
+            [ "$draft" = "true" ] && { echo "Draft external PR — waiting."; exit 0; }
             gh pr edit "$PR" --repo "$REPO" --add-label needs-review || true
             if [ "$ACTION" = "opened" ] || [ "$ACTION" = "reopened" ]; then
-              gh pr comment "$PR" --repo "$REPO" --body "🔒 Thanks for the contribution! A maintainer (@$OWNER_LOGIN) will review and merge this manually. Auto-merge is reserved for the owner."
+              gh pr comment "$PR" --repo "$REPO" --body "🔒 Thanks for the contribution! A maintainer (@$OWNER_LOGIN) will review and merge this manually."
             fi
             exit 0
           fi
 
           if [ "$risky" = "yes" ]; then
+            [ "$draft" = "true" ] && { echo "Draft risky PR — waiting."; exit 0; }
             gh pr edit "$PR" --repo "$REPO" --add-label needs-human || true
             if [ "$ACTION" = "opened" ] || [ "$ACTION" = "reopened" ]; then
-              gh pr comment "$PR" --repo "$REPO" --body "⚠️ This PR touches guarded paths (\`.github/\`, dependencies, \`LICENSE\`, \`scripts/\`) or exceeds the size cap. Auto-merge is disabled — review and merge manually."
+              gh pr comment "$PR" --repo "$REPO" --body "⚠️ This PR touches guarded paths (\`.github/\`, dependencies, \`LICENSE\`, \`scripts/\`) or exceeds the size cap. Review and merge manually."
             fi
             exit 0
           fi
 
-          gh pr edit "$PR" --repo "$REPO" --add-label automerge || true
-          gh pr merge "$PR" --repo "$REPO" --auto --squash
-          echo "Auto-merge enabled (squash). Required checks will gate the merge."
+          # Trusted, non-risky → auto-mark ready for review (no auto-merge).
+          if [ "$draft" = "true" ]; then
+            gh pr ready "$PR" --repo "$REPO" || true
+          fi
+          gh pr edit "$PR" --repo "$REPO" --add-label ready-for-review || true
+          echo "Marked ready for review. The owner reviews and merges manually — no auto-merge."
