@@ -6,14 +6,15 @@ cycle. Keep entries short and specific. Prune contradictions.
 
 ## Workflow & PR hygiene
 
-- **A draft PR is NOT shipped — the gate parks every draft.** `auto-merge-gate.yml`
-  does `if draft=true → "Draft PR — waiting"; exit 0`, and only arms squash
-  auto-merge on the `ready_for_review` event. If a run opens a PR as draft and
-  forgets to mark it ready, it sits forever with green CI and never merges. Run 17
-  found **5** such drafts piled up (#81/#82/#83/#84/#85), all green and clean. The
-  **Ship step is: mark the PR ready** (`update_pull_request draft=false`), which
-  fires the gate; you can also call `enable_pr_auto_merge SQUASH` as a backup.
-  Don't end a run leaving your own PR in draft.
+- **No auto-merge — the owner merges every PR.** The gate is `pr-ready-gate.yml`
+  (formerly `auto-merge-gate.yml`). For a trusted, non-risky PR it auto-marks the
+  PR **ready for review** (`gh pr ready`) and labels it `ready-for-review`; it no
+  longer adds the `automerge` label or calls `gh pr merge --auto`. The **Ship step
+  is: run `/simplify`, then mark the PR ready** (`update_pull_request draft=false`)
+  — do NOT enable auto-merge. Don't end a run leaving your own PR in draft; a draft
+  trusted PR is auto-readied by the gate, but mark it ready yourself to be safe.
+- **Run `/simplify` (gstack) before opening a PR or reviewing one.** Tighten the
+  diff first so the owner reviews clean, minimal changes.
 - **CI status lives in Actions check-runs, not the legacy commit-status API.**
   `pull_request_read method=get_status` returns `total_count:0` for these PRs even
   when CI is fully green — that endpoint reads the old statuses API, which this
