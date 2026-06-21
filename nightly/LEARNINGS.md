@@ -15,6 +15,14 @@ cycle. Keep entries short and specific. Prune contradictions.
   trusted PR is auto-readied by the gate, but mark it ready yourself to be safe.
 - **Run `/simplify` (gstack) before opening a PR or reviewing one.** Tighten the
   diff first so the owner reviews clean, minimal changes.
+- **When the queue is full of green drafts, READY them — do not re-analyze.** On
+  2026-06-21 four runs in a row each re-ran the same local trial-merge and posted
+  another "verified, merge order X→Y→Z" comment to the tracker (#100 hit 16
+  comments) while the 5 PRs stayed in **draft** and un-mergeable all day. The
+  merge-plan analysis is a one-time cost; the *unblocking action* is
+  `update_pull_request draft=false` on each PR (owner token). If a prior run
+  already verified the plan, skip straight to readying. A verified-but-still-draft
+  queue is a failed run, however thorough the comment.
 - **The gate's auto-mark-ready is a no-op — ALWAYS ready your own PR explicitly.**
   `pr-ready-gate.yml` (post-#102) runs `gh pr ready` for trusted non-risky PRs,
   the `gate` check-run goes **green**, but the draft is **not** flipped: under

@@ -5,6 +5,36 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-06-21 (run 20, Sunday late) — readied 5 stuck draft PRs that 4 earlier runs only re-analyzed
+
+- **No new feature PR (queue at 5, over the 2-PR cap).** Sync found **5 open
+  nightly PRs** — #106 (run-19 journal), #108 (v2_1_1 dir split + Tariffs), #109
+  (CI SHA-pin), #110 (2.1.1 Locations types), #111 (2.1.1 Commands types) — all
+  **green CI** and `MERGEABLE`/`CLEAN`, but **all stuck in draft**.
+- **Root cause (new, important):** *four* separate runs earlier today (13:49,
+  14:42, 15:40, 16:40 — all in #100) each re-ran the local trial-merge and posted
+  another "verified zero-conflict, merge order #108→#110→#111" comment — but
+  **none of them flipped the drafts to ready.** The queue therefore stayed
+  un-mergeable all day while #100 grew to 16 comments. Analysis ≠ unblocking.
+- **Fix applied:** marked all 5 PRs **ready** (`update_pull_request draft=false`,
+  owner token — the gate's flip is a no-op, see LEARNINGS). Added `needs-human` to
+  #109 (touches `.github/`). The owner can now merge in the verified order:
+  **#108 → #110 → #111** (stacked; #110/#111 auto-retarget to `main` after #108),
+  then **#109** (owner-reviewed, guarded) and **#106** anytime (independent).
+- **Sunday grooming:** closed the stale meta-tracker **#100** (its merge plan was
+  executed; it had become a loop that made runs re-analyze instead of act) with a
+  single authoritative status comment. M7 tracker is otherwise healthy: #112/#113
+  (P1 2.1.1 Credentials/Locations *wiring*) seeded for after the type PRs land;
+  #90/#91 (Sessions/CDRs types) still open; #89/#92/#93/#101/#13 are closed-by-PR.
+- **What worked:** `update_pull_request draft=false` reliably readies a draft
+  (owner token), unlike the gate. Confirmed all 5 flipped to `draft:false`.
+- **Next:** owner merges the 5 readied PRs (order above) to drop back under the
+  2-PR cap; then M7 continues with #90/#91 (types) or #112/#113 (wiring). **Infra
+  fix still outstanding:** give the gate a token that can ready a draft, else PRs
+  keep sticking. Notified owner.
+
+---
+
 ## 2026-06-20 (run 18) — PR-queue hygiene: marked 4 stuck draft PRs ready
 
 - **No new feature issue tonight.** Sync (workflow step 1) found **4 open
