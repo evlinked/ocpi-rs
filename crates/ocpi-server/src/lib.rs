@@ -22,6 +22,10 @@ use ocpi_types::{
     version::{Endpoint, Version, VersionDetails, VersionNumber},
     DateTime, OcpiStatusCode, Utc,
 };
+// The role-less (pre-2.2) version-details shape, distinct from the role-bearing
+// [`ocpi_types::version::VersionDetails`]. Aliased to keep both names usable
+// side by side without shadowing.
+use ocpi_types::v2_1_1::VersionDetails as LegacyVersionDetails;
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -119,25 +123,49 @@ pub trait VersionsHandler {
 pub struct VersionsConfig {
     /// Ordered list of supported versions (returned by `GET /versions`).
     pub versions: Vec<Version>,
-    /// Endpoint catalogue keyed by version number.
+    /// Role-bearing endpoint catalogues (OCPI 2.2+) keyed by version number.
     pub details: std::collections::HashMap<VersionNumber, VersionDetails>,
+    /// Role-less endpoint catalogues (OCPI 2.1.1 and earlier, before the
+    /// Sender/Receiver split arrived in 2.2) keyed by version number.
+    ///
+    /// Kept separate from [`details`](Self::details) because the 2.1.1
+    /// version-details endpoints carry **no `role` field**; see
+    /// [`ocpi_types::v2_1_1::VersionDetails`]. A version registered here is
+    /// advertised in `GET /versions` exactly like a role-bearing one.
+    pub legacy_details: std::collections::HashMap<VersionNumber, LegacyVersionDetails>,
 }
 
 impl VersionsConfig {
     /// Create an empty registry; add entries with
-    /// [`add_version`](Self::add_version).
+    /// [`add_version`](Self::add_version) or
+    /// [`add_legacy_version`](Self::add_legacy_version).
     #[must_use]
     pub fn new() -> Self {
         Self {
             versions: Vec::new(),
             details: std::collections::HashMap::new(),
+            legacy_details: std::collections::HashMap::new(),
         }
     }
 
-    /// Register a version and its endpoint catalogue.
+    /// Register a role-bearing (OCPI 2.2+) version and its endpoint catalogue.
     pub fn add_version(&mut self, entry: Version, details: VersionDetails) {
         self.versions.push(entry);
         self.details.insert(details.version, details);
+    }
+
+    /// Register a role-less (OCPI 2.1.1 / pre-2.2) version and its endpoint
+    /// catalogue.
+    ///
+    /// The version is advertised in `GET /versions` just like a role-bearing
+    /// one, but `GET /versions/{version}` serves the role-less
+    /// [`ocpi_types::v2_1_1::VersionDetails`] — faithful to the 2.1.1 spec,
+    /// whose endpoints have no `role`. This is what lets a node advertise both
+    /// 2.2.1 and 2.1.1 and complete a `GET /versions/2.1.1` exchange with a
+    /// legacy partner.
+    pub fn add_legacy_version(&mut self, entry: Version, details: LegacyVersionDetails) {
+        self.versions.push(entry);
+        self.legacy_details.insert(details.version, details);
     }
 }
 
@@ -2726,6 +2754,13 @@ pub mod http {
                 .into_response();
             }
         };
+        // Role-less (OCPI ≤2.1.1) catalogues are served verbatim — their
+        // endpoints must omit `role` on the wire. The two maps are keyed by
+        // disjoint version numbers, so a legacy hit and a role-bearing hit
+        // never collide for the same version.
+        if let Some(details) = cfg.legacy_details.get(&version).cloned() {
+            return Json(OcpiResponse::success(details)).into_response();
+        }
         match cfg.details.get(&version).cloned() {
             Some(details) => Json(OcpiResponse::success(details)).into_response(),
             None => Json(OcpiResponse::<VersionDetails>::error(
@@ -4120,6 +4155,107 @@ pub mod http {
         )
     }
 
+    // ── Versions handler tests (#99) ───────────────────────────────────────────
+    //
+    // Drive the `version_details` axum handler directly (no live socket) to
+    // assert that `GET /versions/2.1.1` serves the role-less 2.1.1 catalogue
+    // while `GET /versions/2.2.1` stays role-bearing, and that an unknown
+    // version maps to OCPI `UnsupportedVersion`.
+    // Spec: OCPI 2.1.1 — *Version details endpoint*; OCPI 2.2.1 `version` module.
+    #[cfg(test)]
+    mod versions_tests {
+        use super::*;
+        use ocpi_types::{
+            v2_1_1::{Endpoint as LegacyEndpoint, VersionDetails as LegacyDetails},
+            version::{Endpoint, InterfaceRole, ModuleID, Version},
+            Url,
+        };
+
+        fn config() -> VersionsConfig {
+            let mut cfg = VersionsConfig::new();
+            cfg.add_version(
+                Version {
+                    version: VersionNumber::V2_2_1,
+                    url: Url::try_from("https://example.com/ocpi/2.2.1").unwrap(),
+                },
+                VersionDetails {
+                    version: VersionNumber::V2_2_1,
+                    endpoints: vec![Endpoint {
+                        identifier: ModuleID::Credentials,
+                        role: InterfaceRole::Sender,
+                        url: Url::try_from("https://example.com/ocpi/2.2.1/credentials").unwrap(),
+                    }],
+                },
+            );
+            cfg.add_legacy_version(
+                Version {
+                    version: VersionNumber::V2_1_1,
+                    url: Url::try_from("https://example.com/ocpi/2.1.1").unwrap(),
+                },
+                LegacyDetails {
+                    version: VersionNumber::V2_1_1,
+                    endpoints: vec![LegacyEndpoint {
+                        identifier: ModuleID::Locations,
+                        url: Url::try_from("https://example.com/ocpi/2.1.1/locations").unwrap(),
+                    }],
+                },
+            );
+            cfg
+        }
+
+        async fn body_string(resp: Response) -> String {
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            String::from_utf8(bytes.to_vec()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn list_versions_advertises_both() {
+            let cfg = Arc::new(config());
+            let resp = list_versions(State(cfg)).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_string(resp).await;
+            assert!(body.contains("2.1.1"), "list must advertise 2.1.1: {body}");
+            assert!(body.contains("2.2.1"), "list must advertise 2.2.1: {body}");
+        }
+
+        #[tokio::test]
+        async fn version_details_2_1_1_is_role_less() {
+            let cfg = Arc::new(config());
+            let resp = version_details(State(cfg), Path("2.1.1".to_owned())).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_string(resp).await;
+            // A faithful 2.1.1 details document carries no `role` key.
+            assert!(!body.contains("role"), "2.1.1 details leaked role: {body}");
+            assert!(body.contains("locations"));
+        }
+
+        #[tokio::test]
+        async fn version_details_2_2_1_stays_role_bearing() {
+            let cfg = Arc::new(config());
+            let resp = version_details(State(cfg), Path("2.2.1".to_owned())).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_string(resp).await;
+            assert!(
+                body.contains("role"),
+                "2.2.1 details must carry role: {body}"
+            );
+        }
+
+        #[tokio::test]
+        async fn version_details_unknown_is_unsupported() {
+            // "2.0" parses to a real VersionNumber but is registered in neither
+            // map, so it falls through to UnsupportedVersion rather than the
+            // InvalidParameters path taken by an unparseable string.
+            let cfg = Arc::new(config());
+            let resp = version_details(State(cfg), Path("2.0".to_owned())).await;
+            let body = body_string(resp).await;
+            // OCPI status_code 3002 = UnsupportedVersion — never a silent drop.
+            assert!(body.contains("3002"), "expected UnsupportedVersion: {body}");
+        }
+    }
+
     // ── Credentials handler tests (#76) ────────────────────────────────────────
     //
     // Drive the axum handlers directly (no live socket) to assert the OCPI 2.2.1
@@ -4521,6 +4657,62 @@ mod tests {
         assert_eq!(cfg.versions.len(), 1);
         assert_eq!(cfg.versions[0].version, VersionNumber::V2_2_1);
         assert_eq!(cfg.details.get(&VersionNumber::V2_2_1).unwrap(), &details);
+    }
+
+    #[test]
+    fn versions_config_advertises_2_1_1_and_2_2_1() {
+        use ocpi_types::{
+            v2_1_1::{Endpoint as LegacyEndpoint, VersionDetails as LegacyDetails},
+            version::{Endpoint, InterfaceRole, ModuleID, Version, VersionDetails, VersionNumber},
+            Url,
+        };
+
+        let mut cfg = VersionsConfig::new();
+        cfg.add_version(
+            Version {
+                version: VersionNumber::V2_2_1,
+                url: Url::try_from("https://example.com/ocpi/2.2.1").unwrap(),
+            },
+            VersionDetails {
+                version: VersionNumber::V2_2_1,
+                endpoints: vec![Endpoint {
+                    identifier: ModuleID::Credentials,
+                    role: InterfaceRole::Sender,
+                    url: Url::try_from("https://example.com/ocpi/2.2.1/credentials").unwrap(),
+                }],
+            },
+        );
+        cfg.add_legacy_version(
+            Version {
+                version: VersionNumber::V2_1_1,
+                url: Url::try_from("https://example.com/ocpi/2.1.1").unwrap(),
+            },
+            LegacyDetails {
+                version: VersionNumber::V2_1_1,
+                endpoints: vec![LegacyEndpoint {
+                    identifier: ModuleID::Credentials,
+                    url: Url::try_from("https://example.com/ocpi/2.1.1/credentials").unwrap(),
+                }],
+            },
+        );
+
+        // Both versions are advertised in GET /versions.
+        let advertised: Vec<VersionNumber> = cfg.versions.iter().map(|v| v.version).collect();
+        assert!(advertised.contains(&VersionNumber::V2_1_1));
+        assert!(advertised.contains(&VersionNumber::V2_2_1));
+
+        // The 2.1.1 catalogue lives in the role-less map and serializes without
+        // a `role` field; the 2.2.1 catalogue stays role-bearing.
+        let legacy = cfg.legacy_details.get(&VersionNumber::V2_1_1).unwrap();
+        let legacy_json = ocpi_types::serde_json::to_string(legacy).unwrap();
+        assert!(
+            !legacy_json.contains("role"),
+            "2.1.1 details: {legacy_json}"
+        );
+
+        let role_bearing = cfg.details.get(&VersionNumber::V2_2_1).unwrap();
+        let role_json = ocpi_types::serde_json::to_string(role_bearing).unwrap();
+        assert!(role_json.contains("role"), "2.2.1 details: {role_json}");
     }
 
     #[test]
