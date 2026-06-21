@@ -38,15 +38,56 @@ fn token_type_str(t: TokenType) -> &'static str {
     }
 }
 
-/// Select the best common version from `remote` given `supported` local versions.
+/// Negotiate the highest OCPI version supported by both parties.
 ///
-/// Picks the entry with the highest [`VersionNumber`] that also appears in
-/// `supported`, or `None` if there is no overlap.
-fn select_version<'a>(remote: &'a [Version], supported: &[VersionNumber]) -> Option<&'a Version> {
+/// Given a remote party's `/versions` list (`remote`, the `data` array of a
+/// `GET /versions` response — deserialized as `Vec<`[`Version`]`>`) and this
+/// party's own `supported` versions, returns the highest [`VersionNumber`]
+/// present in both, or `None` when there is no common version.
+///
+/// This is a **pure, IO-free** helper: callers that have already fetched the
+/// remote `/versions` list use it to decide which version's code path to drive
+/// (e.g. a roaming hub selecting between its 2.1.1 and 2.2.1 module clients).
+/// A `None` result is a hard negotiation failure and must be surfaced as an
+/// explicit OCPI `status_code` (`UnsupportedVersion`), never a silent drop.
+///
+/// Ordering follows [`VersionNumber`]'s `Ord`:
+/// `V2_3_0 > V2_2_1 > V2_2 > V2_1_1 > V2_0`.
+///
+/// For the convenience method that performs the full network bootstrap
+/// (`GET /versions` then `GET /versions/{version}`), see
+/// [`OcpiClient::negotiate_version`].
+///
+/// # Examples
+///
+/// ```
+/// use ocpi_client::negotiate_version;
+/// use ocpi_types::serde_json;
+/// use ocpi_types::version::{Version, VersionNumber};
+///
+/// let remote: Vec<Version> = serde_json::from_str(
+///     r#"[{"version":"2.1.1","url":"https://partner.example/ocpi/2.1.1"}]"#,
+/// )
+/// .unwrap();
+/// let supported = [VersionNumber::V2_1_1, VersionNumber::V2_2_1];
+/// assert_eq!(negotiate_version(&remote, &supported), Some(VersionNumber::V2_1_1));
+/// ```
+#[must_use]
+pub fn negotiate_version(remote: &[Version], supported: &[VersionNumber]) -> Option<VersionNumber> {
     remote
         .iter()
-        .filter(|v| supported.contains(&v.version))
-        .max_by_key(|v| v.version)
+        .map(|v| v.version)
+        .filter(|v| supported.contains(v))
+        .max()
+}
+
+/// Select the best common version entry from `remote` given `supported`.
+///
+/// Like [`negotiate_version`] but returns the full [`Version`] entry (including
+/// its details `url`) so the caller can follow it to `GET /versions/{version}`.
+fn select_version<'a>(remote: &'a [Version], supported: &[VersionNumber]) -> Option<&'a Version> {
+    let chosen = negotiate_version(remote, supported)?;
+    remote.iter().find(|v| v.version == chosen)
 }
 
 /// Append URL path `segments` to a base endpoint URL, collapsing any single
@@ -256,6 +297,9 @@ impl OcpiClient {
     /// 3. `GET <version-url>` — return the selected version's [`VersionDetails`].
     ///
     /// Version priority (highest wins): `V2_3_0 > V2_2_1 > V2_2 > V2_1_1 > V2_0`.
+    ///
+    /// For the pure, IO-free version-selection step on an already-fetched
+    /// `/versions` list, see the free function [`negotiate_version`].
     ///
     /// # Errors
     ///
@@ -1776,12 +1820,13 @@ impl VersionFetcher for OcpiVersionFetcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        charging_profile_url, fetch_auth_header, join_segments, parse_fetch_url, select_version,
-        OcpiClient, OcpiVersionFetcher,
+        charging_profile_url, fetch_auth_header, join_segments, negotiate_version, parse_fetch_url,
+        select_version, OcpiClient, OcpiVersionFetcher,
     };
     use ocpi_server::{FetchError, VersionFetcher};
     use ocpi_types::{
         common::Url as OcpiUrl,
+        serde_json,
         version::{Version, VersionNumber},
     };
     use url::Url;
@@ -1791,6 +1836,85 @@ mod tests {
             version: v,
             url: OcpiUrl::try_from(url).unwrap(),
         }
+    }
+
+    // ── negotiate_version (pure helper, spec /versions fixtures) ───────────────
+
+    // OCPI 2.1.1 §6.1 `GET /versions` response `data` array — a legacy partner
+    // that speaks only 2.1.1. (specs/ocpi/2.1.1 — Versions module.)
+    const PARTNER_2_1_1_VERSIONS: &str = r#"[
+        {"version": "2.1.1", "url": "https://partner.example/ocpi/2.1.1"}
+    ]"#;
+
+    // OCPI 2.2.1 `GET /versions` response `data` array — a partner that
+    // advertises both 2.2.1 and 2.1.1. (specs/ocpi/2.2.1 — version endpoint.)
+    const PARTNER_DUAL_VERSIONS: &str = r#"[
+        {"version": "2.2.1", "url": "https://partner.example/ocpi/2.2.1"},
+        {"version": "2.1.1", "url": "https://partner.example/ocpi/2.1.1"}
+    ]"#;
+
+    // The hub speaks both 2.1.1 and 2.2.1.
+    const HUB_SUPPORTED: [VersionNumber; 2] = [VersionNumber::V2_1_1, VersionNumber::V2_2_1];
+
+    #[test]
+    fn negotiate_picks_2_1_1_with_legacy_partner() {
+        // A 2.1.1-only partner: the only mutual version is 2.1.1.
+        let remote: Vec<Version> = serde_json::from_str(PARTNER_2_1_1_VERSIONS).unwrap();
+        assert_eq!(
+            negotiate_version(&remote, &HUB_SUPPORTED),
+            Some(VersionNumber::V2_1_1)
+        );
+    }
+
+    #[test]
+    fn negotiate_prefers_2_2_1_with_dual_partner() {
+        // Both speak 2.1.1 and 2.2.1 → pick the highest mutual, 2.2.1.
+        let remote: Vec<Version> = serde_json::from_str(PARTNER_DUAL_VERSIONS).unwrap();
+        assert_eq!(
+            negotiate_version(&remote, &HUB_SUPPORTED),
+            Some(VersionNumber::V2_2_1)
+        );
+    }
+
+    #[test]
+    fn negotiate_disjoint_returns_none() {
+        // Partner speaks only 2.0; the hub does not → no common version.
+        // Caller maps this to an explicit `UnsupportedVersion` status_code.
+        let remote = vec![make_version(
+            VersionNumber::V2_0,
+            "https://partner.example/2.0",
+        )];
+        assert_eq!(negotiate_version(&remote, &HUB_SUPPORTED), None);
+    }
+
+    #[test]
+    fn negotiate_empty_remote_returns_none() {
+        assert_eq!(negotiate_version(&[], &HUB_SUPPORTED), None);
+    }
+
+    #[test]
+    fn negotiate_ignores_remote_versions_we_do_not_support() {
+        // Partner advertises a future 2.3.0 plus 2.1.1; a hub that only speaks
+        // {2.1.1, 2.2.1} must fall back to the highest it actually supports.
+        let remote = vec![
+            make_version(VersionNumber::V2_3_0, "https://partner.example/2.3.0"),
+            make_version(VersionNumber::V2_1_1, "https://partner.example/2.1.1"),
+        ];
+        assert_eq!(
+            negotiate_version(&remote, &HUB_SUPPORTED),
+            Some(VersionNumber::V2_1_1)
+        );
+    }
+
+    #[test]
+    fn negotiate_agrees_with_select_version_url() {
+        // The pure negotiator and the entry-returning `select_version` must
+        // agree: the chosen number indexes the chosen details URL.
+        let remote: Vec<Version> = serde_json::from_str(PARTNER_DUAL_VERSIONS).unwrap();
+        let chosen = negotiate_version(&remote, &HUB_SUPPORTED).unwrap();
+        let entry = select_version(&remote, &HUB_SUPPORTED).unwrap();
+        assert_eq!(entry.version, chosen);
+        assert_eq!(entry.url.as_str(), "https://partner.example/ocpi/2.2.1");
     }
 
     // ── select_version ────────────────────────────────────────────────────────

@@ -15,6 +15,15 @@ cycle. Keep entries short and specific. Prune contradictions.
   trusted PR is auto-readied by the gate, but mark it ready yourself to be safe.
 - **Run `/simplify` (gstack) before opening a PR or reviewing one.** Tighten the
   diff first so the owner reviews clean, minimal changes.
+- **The gate's auto-mark-ready is a no-op — ALWAYS ready your own PR explicitly.**
+  `pr-ready-gate.yml` (post-#102) runs `gh pr ready` for trusted non-risky PRs,
+  the `gate` check-run goes **green**, but the draft is **not** flipped: under
+  `pull_request_target` the default `GITHUB_TOKEN` can't convert draft→ready and
+  the failure is swallowed by `|| true`. Confirmed twice (run 17, run 18) — PRs
+  pile up in draft despite green gates. So the Ship step MUST end with
+  `update_pull_request draft=false` from the owner token; never rely on the gate
+  to ready a draft. (The gate still *labels* correctly.) Until the gate gets a
+  PR-write token, this is on the routine.
 - **CI status lives in Actions check-runs, not the legacy commit-status API.**
   `pull_request_read method=get_status` returns `total_count:0` for these PRs even
   when CI is fully green — that endpoint reads the old statuses API, which this

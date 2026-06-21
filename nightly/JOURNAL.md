@@ -5,6 +5,48 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-06-20 (run 18) — PR-queue hygiene: marked 4 stuck draft PRs ready
+
+- **No new feature issue tonight.** Sync (workflow step 1) found **4 open
+  nightly PRs** — #96, #97, #98, #103 — over the "never more than 2 open" rule,
+  and all four were stuck in **draft**. Did not open a feature PR; draining the
+  queue was the job.
+- **All four are healthy:** owner-authored (`duyhuynh-vn`), `mergeable_state:
+  clean`, and **all 12 CI check-runs green** (`fmt`/`clippy`/`test
+  stable+beta+nightly`/`doc`/`coverage`/`deny`/`audit`/`msrv`/`guardrails`/`gate`).
+  None touch guarded paths (only `v2_1_1.rs`, `README.md`, `ocpi-client/src`,
+  and a new `tests/` file), so none are `needs-human`.
+- **Root cause — the new gate does NOT flip drafts.** #102 (landed on `main`
+  2026-06-20 10:44) replaced auto-merge with "auto-mark ready for review" via
+  `gh pr ready` in `pr-ready-gate.yml`. But the `gate` check-run reports
+  **success** while the PRs stay **draft**: under `pull_request_target` the
+  default `GITHUB_TOKEN` cannot convert a draft to ready (the GraphQL
+  `markPullRequestReadyForReview` is silently swallowed by `|| true`). So even
+  with the new gate, trusted PRs pile up in draft exactly like run 17 — the gate
+  *labels* but never *readies*.
+- **Action:** marked all four ready via the owner token
+  (`update_pull_request draft=false`). The `ready_for_review` transition fires
+  the gate, which now labels them `ready-for-review`. Queue is unblocked for the
+  owner to merge. Did **not** merge them myself (governance: the owner merges).
+- **Merge ordering for the owner:** #96/#97/#98 all edit
+  `crates/ocpi-types/src/v2_1_1.rs` **and** flip a `README.md` matrix cell, so
+  they collide pairwise — merge **one**, then the other two need a trivial
+  rebase. **#103** touches only `ocpi-client/src/lib.rs` → independent, merge
+  anytime.
+- **What worked:** `mergeable_state: clean` + a `get_check_runs` spot-check is a
+  fast, reliable green signal (the legacy status API still returns
+  `total_count:0` — see LEARNINGS). Marking ready (not `merge_pull_request`)
+  keeps the owner's governance in the loop.
+- **Next (owner action needed):** merge the four ready PRs (one of 96/97/98,
+  then rebase the rest; 103 anytime) to get back under the 2-PR cap. **Infra
+  fix worth doing:** give the gate a token that can actually ready a draft (a PAT
+  / app token with PR write, or a `workflow_dispatch`), else every night's PR
+  keeps sticking in draft. After the queue drains, M7 (2.1.1) continues:
+  Sessions (#90), CDRs (#91), Locations (#89), and server/client wiring for the
+  already-merged 2.1.1 types.
+
+---
+
 ## 2026-06-19 (run 17) — PR-queue hygiene: drained 4 stuck draft PRs
 
 - **No new feature issue tonight.** Sync (workflow step 1) found **5 open
