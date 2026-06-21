@@ -26,6 +26,9 @@ use ocpi_types::{
 // [`ocpi_types::version::VersionDetails`]. Aliased to keep both names usable
 // side by side without shadowing.
 use ocpi_types::v2_1_1::VersionDetails as LegacyVersionDetails;
+// The flat OCPI 2.1.1 credentials object (no `roles` array), aliased to keep it
+// distinct from the role-bearing 2.2.1 `Credentials` imported above.
+use ocpi_types::v2_1_1::Credentials as Credentials2111;
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -572,6 +575,119 @@ impl CredentialsConfig {
     ///
     /// Returns [`ServerError::NotRegistered`] if `token` is not in the
     /// registry.
+    pub fn delete(&self, token: &str) -> Result<(), ServerError> {
+        let mut map = self.registered.write().expect("lock not poisoned");
+        if !map.contains_key(token) {
+            return Err(ServerError::NotRegistered);
+        }
+        map.remove(token);
+        Ok(())
+    }
+}
+
+// ── Credentials2111Config (OCPI 2.1.1) ─────────────────────────────────────────
+
+/// An in-memory credentials store for the **flat OCPI 2.1.1** registration
+/// handshake, the 2.1.1 counterpart to [`CredentialsConfig`].
+///
+/// Holds the server's own flat [`Credentials2111`] and a token-keyed registry
+/// of registered parties. Thread-safe via interior mutability (`RwLock`); wrap
+/// in `Arc` to share across axum handlers (see [`http::credentials_2_1_1_router`]).
+///
+/// The 2.1.1 registration *fetch-back* — `GET`-ing the registering party's
+/// `/versions` for its endpoint catalogue — is **not** wired here: a 2.1.1
+/// party advertises role-less version details, which the role-bearing
+/// [`VersionFetcher`] cannot model. This store therefore registers parties
+/// without an endpoint catalogue (the same path [`CredentialsConfig`] takes
+/// when no fetcher is configured). The role-less fetch-back is tracked as a
+/// follow-up.
+pub struct Credentials2111Config {
+    /// The credentials this server returns on every successful request — its
+    /// `token` is the issued *Token C* the registry is keyed by.
+    pub own_credentials: Credentials2111,
+    registered: std::sync::RwLock<std::collections::HashMap<String, Credentials2111>>,
+}
+
+impl std::fmt::Debug for Credentials2111Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials2111Config")
+            .field("own_credentials", &self.own_credentials)
+            .field(
+                "registered_count",
+                &self.registered.read().map(|m| m.len()).unwrap_or(0),
+            )
+            .finish()
+    }
+}
+
+impl Credentials2111Config {
+    /// Create a new 2.1.1 registry with the given server credentials.
+    ///
+    /// No parties are registered initially. Parties register via the axum
+    /// router ([`http::credentials_2_1_1_router`]) or [`register`](Self::register).
+    #[must_use]
+    pub fn new(own_credentials: Credentials2111) -> Self {
+        Self {
+            own_credentials,
+            registered: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Returns `true` if `token` belongs to a registered party.
+    #[must_use]
+    pub fn is_registered(&self, token: &str) -> bool {
+        self.registered
+            .read()
+            .expect("lock not poisoned")
+            .contains_key(token)
+    }
+
+    /// Register a new party under `token`, storing their flat credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::AlreadyRegistered`] if `token` is already known.
+    pub fn register(&self, token: &str, credentials: Credentials2111) -> Result<(), ServerError> {
+        let mut map = self.registered.write().expect("lock not poisoned");
+        if map.contains_key(token) {
+            return Err(ServerError::AlreadyRegistered);
+        }
+        map.insert(token.to_owned(), credentials);
+        Ok(())
+    }
+
+    /// Update the stored credentials for an already-registered party.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotRegistered`] if `token` is not in the registry.
+    pub fn update(&self, token: &str, credentials: Credentials2111) -> Result<(), ServerError> {
+        let mut map = self.registered.write().expect("lock not poisoned");
+        if !map.contains_key(token) {
+            return Err(ServerError::NotRegistered);
+        }
+        map.insert(token.to_owned(), credentials);
+        Ok(())
+    }
+
+    /// Invalidate `token`, removing it from the registry if present.
+    ///
+    /// Unlike [`delete`](Self::delete) this never errors on an unknown token —
+    /// it is used to burn the single-use bootstrap *Token A* once registration
+    /// completes. Returns `true` if the token was present.
+    pub fn invalidate(&self, token: &str) -> bool {
+        self.registered
+            .write()
+            .expect("lock not poisoned")
+            .remove(token)
+            .is_some()
+    }
+
+    /// Remove the registration for `token`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotRegistered`] if `token` is not in the registry.
     pub fn delete(&self, token: &str) -> Result<(), ServerError> {
         let mut map = self.registered.write().expect("lock not poisoned");
         if !map.contains_key(token) {
@@ -2719,9 +2835,12 @@ pub mod http {
 
     use crate::{
         token_type_str, CdrsConfig, ChargingProfilesConfig, ChargingProfilesHandler,
-        CommandsConfig, CommandsHandler, CredentialsConfig, HubClientInfoConfig, LocationsConfig,
-        ServerError, SessionsConfig, TariffsConfig, TokensConfig, VersionsConfig,
+        CommandsConfig, CommandsHandler, Credentials2111Config, CredentialsConfig,
+        HubClientInfoConfig, LocationsConfig, ServerError, SessionsConfig, TariffsConfig,
+        TokensConfig, VersionsConfig,
     };
+    // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
+    use ocpi_types::v2_1_1::Credentials as Credentials2111;
 
     // ── Versions ──────────────────────────────────────────────────────────────
 
@@ -2940,6 +3059,146 @@ pub mod http {
             Ok(()) => Json(OcpiResponse::<Credentials>::success_empty()).into_response(),
             Err(ServerError::NotRegistered) => credentials_method_not_allowed("not registered"),
             Err(_) => credentials_server_error(),
+        }
+    }
+
+    // ── Credentials (OCPI 2.1.1, flat object) ──────────────────────────────────
+
+    /// Build an axum router for the **OCPI 2.1.1** Credentials module.
+    ///
+    /// Exposes `GET/POST/PUT/DELETE /credentials` over the flat 2.1.1
+    /// [`Credentials2111`] object, running the same Token A→B→C registration
+    /// semantics as [`credentials_router`]: the registry is keyed by the issued
+    /// *Token C* (`own_credentials.token`) and the bootstrap *Token A* is burned
+    /// on a successful `POST`. The 2.1.1 fetch-back is not performed (see
+    /// [`Credentials2111Config`]).
+    pub fn credentials_2_1_1_router(config: Arc<Credentials2111Config>) -> Router {
+        Router::new()
+            .route(
+                "/credentials",
+                get(credentials_2_1_1_get)
+                    .post(credentials_2_1_1_post)
+                    .put(credentials_2_1_1_put)
+                    .delete(credentials_2_1_1_delete),
+            )
+            .with_state(config)
+    }
+
+    fn credentials_2_1_1_unauthorized() -> Response {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(OcpiResponse::<Credentials2111>::error(
+                OcpiStatusCode::ClientError,
+                "unauthorized",
+            )),
+        )
+            .into_response()
+    }
+
+    fn credentials_2_1_1_method_not_allowed(msg: &'static str) -> Response {
+        (
+            StatusCode::METHOD_NOT_ALLOWED,
+            Json(OcpiResponse::<Credentials2111>::error(
+                OcpiStatusCode::ClientError,
+                msg,
+            )),
+        )
+            .into_response()
+    }
+
+    fn credentials_2_1_1_server_error() -> Response {
+        Json(OcpiResponse::<Credentials2111>::error(
+            OcpiStatusCode::ServerError,
+            "internal server error",
+        ))
+        .into_response()
+    }
+
+    async fn credentials_2_1_1_get(
+        State(cfg): State<Arc<Credentials2111Config>>,
+        headers: HeaderMap,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_1_1_unauthorized(),
+        };
+        if !cfg.is_registered(token.as_str()) {
+            return credentials_2_1_1_unauthorized();
+        }
+        Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response()
+    }
+
+    async fn credentials_2_1_1_post(
+        State(cfg): State<Arc<Credentials2111Config>>,
+        headers: HeaderMap,
+        Json(body): Json<Credentials2111>,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_1_1_unauthorized(),
+        };
+        // The registry is keyed by the issued Token C (`own_credentials.token`):
+        // the Sender switches to Token C for every subsequent request, so that —
+        // not the bootstrap Token A bearer — is what must authenticate
+        // afterwards. Reject re-registration (the Sender should PUT to rotate).
+        if cfg.is_registered(cfg.own_credentials.token.as_str()) {
+            return credentials_2_1_1_method_not_allowed("already registered");
+        }
+        match cfg.register(cfg.own_credentials.token.as_str(), body) {
+            Ok(()) => {
+                // Burn the single-use bootstrap Token A once the Sender holds
+                // Token C. Guard against a misconfiguration where Token C equals
+                // the bearer, which would otherwise undo the registration.
+                if token.as_str() != cfg.own_credentials.token.as_str() {
+                    cfg.invalidate(token.as_str());
+                }
+                Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response()
+            }
+            Err(ServerError::AlreadyRegistered) => {
+                credentials_2_1_1_method_not_allowed("already registered")
+            }
+            Err(_) => credentials_2_1_1_server_error(),
+        }
+    }
+
+    async fn credentials_2_1_1_put(
+        State(cfg): State<Arc<Credentials2111Config>>,
+        headers: HeaderMap,
+        Json(body): Json<Credentials2111>,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_1_1_unauthorized(),
+        };
+        // The caller authenticates with the registered Token C.
+        if !cfg.is_registered(token.as_str()) {
+            return credentials_2_1_1_method_not_allowed("not registered");
+        }
+        // The registration is keyed by Token C (`own_credentials.token`); update
+        // under that same key rather than the bearer.
+        match cfg.update(cfg.own_credentials.token.as_str(), body) {
+            Ok(()) => Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response(),
+            Err(ServerError::NotRegistered) => {
+                credentials_2_1_1_method_not_allowed("not registered")
+            }
+            Err(_) => credentials_2_1_1_server_error(),
+        }
+    }
+
+    async fn credentials_2_1_1_delete(
+        State(cfg): State<Arc<Credentials2111Config>>,
+        headers: HeaderMap,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_1_1_unauthorized(),
+        };
+        match cfg.delete(token.as_str()) {
+            Ok(()) => Json(OcpiResponse::<Credentials2111>::success_empty()).into_response(),
+            Err(ServerError::NotRegistered) => {
+                credentials_2_1_1_method_not_allowed("not registered")
+            }
+            Err(_) => credentials_2_1_1_server_error(),
         }
     }
 
@@ -4385,6 +4644,135 @@ pub mod http {
             let resp = credentials_delete(State(cfg.clone()), auth("TOKEN_C")).await;
             assert_eq!(resp.status(), StatusCode::OK);
             assert!(!cfg.is_registered("TOKEN_C"));
+        }
+    }
+
+    // ── 2.1.1 Credentials handler tests (#112) ─────────────────────────────────
+    //
+    // Same Token A→B→C semantics as the 2.2.1 tests above, but driven against
+    // the flat 2.1.1 object and `credentials_2_1_1_*` handlers. The 2.1.1 store
+    // performs no fetch-back, so a `POST` registers directly under Token C.
+    #[cfg(test)]
+    mod credentials_2_1_1_tests {
+        use super::*;
+        use ocpi_types::{
+            common::{BusinessDetails, CiString2, CiString3},
+            Url,
+        };
+
+        fn creds(token: &str) -> Credentials2111 {
+            Credentials2111 {
+                token: token.to_owned(),
+                url: Url::try_from("https://example.com/ocpi/versions").unwrap(),
+                business_details: BusinessDetails {
+                    name: "Test Party".into(),
+                    website: None,
+                    logo: None,
+                },
+                party_id: CiString3::try_from("EXA").unwrap(),
+                country_code: CiString2::try_from("NL").unwrap(),
+            }
+        }
+
+        fn auth(raw_token: &str) -> HeaderMap {
+            let mut headers = HeaderMap::new();
+            let value = CredentialToken::new(raw_token).to_header_value();
+            headers.insert("Authorization", value.parse().expect("valid header value"));
+            headers
+        }
+
+        fn config() -> Arc<Credentials2111Config> {
+            Arc::new(Credentials2111Config::new(creds("TOKEN_C")))
+        }
+
+        #[tokio::test]
+        async fn post_registers_under_token_c_and_burns_token_a() {
+            let cfg = config();
+            let resp =
+                credentials_2_1_1_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B")))
+                    .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(cfg.is_registered("TOKEN_C"));
+            assert!(!cfg.is_registered("TOKEN_A"));
+            assert!(!cfg.is_registered("TOKEN_B"));
+        }
+
+        #[tokio::test]
+        async fn get_authenticates_with_token_c_and_rejects_token_a() {
+            let cfg = config();
+            credentials_2_1_1_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B")))
+                .await;
+
+            let ok = credentials_2_1_1_get(State(cfg.clone()), auth("TOKEN_C")).await;
+            assert_eq!(ok.status(), StatusCode::OK);
+
+            let unauth = credentials_2_1_1_get(State(cfg.clone()), auth("TOKEN_A")).await;
+            assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn get_before_registration_is_401() {
+            let cfg = config();
+            let resp = credentials_2_1_1_get(State(cfg.clone()), auth("TOKEN_C")).await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn re_post_after_registration_is_405() {
+            let cfg = config();
+            credentials_2_1_1_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B")))
+                .await;
+            let resp = credentials_2_1_1_post(
+                State(cfg.clone()),
+                auth("TOKEN_A2"),
+                Json(creds("TOKEN_B2")),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+            assert!(cfg.is_registered("TOKEN_C"));
+        }
+
+        #[tokio::test]
+        async fn put_authenticates_with_token_c_and_rejects_burned_token_a() {
+            let cfg = config();
+            credentials_2_1_1_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B")))
+                .await;
+
+            let rotated = credentials_2_1_1_put(
+                State(cfg.clone()),
+                auth("TOKEN_C"),
+                Json(creds("TOKEN_B_NEW")),
+            )
+            .await;
+            assert_eq!(rotated.status(), StatusCode::OK);
+            assert!(cfg.is_registered("TOKEN_C"));
+
+            let stale = credentials_2_1_1_put(
+                State(cfg.clone()),
+                auth("TOKEN_A"),
+                Json(creds("TOKEN_B_NEW")),
+            )
+            .await;
+            assert_eq!(stale.status(), StatusCode::METHOD_NOT_ALLOWED);
+        }
+
+        #[tokio::test]
+        async fn delete_with_token_c_unregisters() {
+            let cfg = config();
+            credentials_2_1_1_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B")))
+                .await;
+            let resp = credentials_2_1_1_delete(State(cfg.clone()), auth("TOKEN_C")).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(!cfg.is_registered("TOKEN_C"));
+        }
+
+        #[tokio::test]
+        async fn put_before_registration_is_405() {
+            let cfg = config();
+            let resp =
+                credentials_2_1_1_put(State(cfg.clone()), auth("TOKEN_C"), Json(creds("TOKEN_B")))
+                    .await;
+            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
         }
     }
 }
