@@ -400,9 +400,9 @@ pub struct Connector {
     pub format: ConnectorFormat,
     /// Electrical power type.
     pub power_type: PowerType,
-    /// Voltage of the connector (line to neutral for AC_3_PHASE), in volt [V].
+    /// Voltage of the connector (line to neutral for AC_3_PHASE), in volt (V).
     pub voltage: i32,
-    /// Maximum amperage of the connector, in ampere [A].
+    /// Maximum amperage of the connector, in ampere (A).
     pub amperage: i32,
     /// Identifier of the current charging tariff (single, optional in 2.1.1).
     #[serde(skip_serializing_if = "Option::is_none", default)]
