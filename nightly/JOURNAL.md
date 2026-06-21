@@ -5,6 +5,47 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-06-21 (run 19) — unblock the M7 type queue: resolve conflicts + complete #99 server-advertise
+
+- **Triage:** Sync found 2 open nightly PRs (#97 Tokens, #98 Tariffs), **both
+  `CONFLICTING`/`DIRTY`** against `main`, and uncommitted server work in the
+  working tree for #99. Fix-before-feature → resolve the conflicts first.
+- **Root cause of the conflicts = #101.** Every 2.1.1 PR appends its structs +
+  a `#[cfg(test)] mod tests` block to the **same tail region** of the single
+  `crates/ocpi-types/src/v2_1_1.rs` file. After #96 (Credentials) landed, #97
+  and #98 both conflicted on the imports line, the struct-append point, and the
+  test-module-append point. The fix lands them; the *real* fix is the #101 split
+  (do it once these merge).
+- **What shipped (3 PRs):**
+  1. **#97 (Tokens)** — rebased/merged `main`, resolved `v2_1_1.rs` (kept Token
+     types alongside Credentials, merged both test modules). Pushed → **owner
+     merged it to `main` mid-run** (commit `1097805`). ✅
+  2. **#98 (Tariffs)** — resolved once vs old `main`; then #97's merge advanced
+     `main` and **re-conflicted** it (Tariffs vs the now-present Tokens, sharing
+     the trailing `last_updated`/`assert_eq!(back, ty)` lines), so resolved a
+     **second time** vs new `main`. Pushed, mergeable at the git level.
+  3. **#105 (NEW, closes #99)** — completed the **server-advertise** half of #99
+     (the client `negotiate_version` half landed in #103): `VersionsConfig`
+     gains `legacy_details` + `add_legacy_version`; `GET /versions/2.1.1` serves
+     a role-less `v2_1_1::VersionDetails`; 2.2.1 stays role-bearing; unknown →
+     `UnsupportedVersion` (3002). 5 new handler/serde tests. README: Versions ×
+     2.1.1 → ☑.
+- **CI:** all checks run with `--all-features` (CI does too — the `http` module
+  is `#[cfg(feature = "axum")]`, so local checks **must** pass `--all-features`
+  or the router tests don't compile). fmt/clippy/test/doc all green locally;
+  #105 fully green on GitHub.
+- **What worked:** verifying mergeability at the *git* level (`merge-base
+  --is-ancestor origin/main <tip>`) rather than trusting GitHub's `mergeable`
+  field, which lags minutes behind a push and showed stale `CONFLICTING` long
+  after the resolved tip already contained `main`.
+- **Gotcha for next run:** `cargo test`/`clippy` **without** `--all-features`
+  fails to compile `ocpi-server` lib-tests (`http::` unresolved) — always pass
+  `--all-features` to match CI.
+- **Next:** land the #101 split of `v2_1_1.rs` into a directory module — it
+  removes this recurring conflict class for #89/#90/#91/#93. Do it immediately
+  after #98 merges (it will conflict with any open type PR, so the queue should
+  be empty first).
+
 ## 2026-06-20 (run 18) — PR-queue hygiene: marked 4 stuck draft PRs ready
 
 - **No new feature issue tonight.** Sync (workflow step 1) found **4 open
