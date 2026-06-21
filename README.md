@@ -84,7 +84,7 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 | Sessions | ☐ | ☑ | ☐ |
 | CDRs | ☐ | ☑ | ☐ |
 | Tariffs | ☐ | ☑ | ☐ |
-| Tokens | ☐ | ☑ | ☐ |
+| Tokens | ◑ | ☑ | ☐ |
 | Commands | ☐ | ☑ | ☐ |
 | ChargingProfiles | — | ☑ | ☐ |
 | HubClientInfo | — | ☑ | ☐ |
