@@ -13,7 +13,7 @@ mod error;
 
 pub use error::ClientError;
 
-use ocpi_server::{FetchError, FetchFuture, VersionFetcher};
+use ocpi_server::{FetchError, FetchFuture, LegacyVersionFetcher, VersionFetcher};
 use ocpi_types::{
     transport::{CredentialToken, PaginatedParams, PaginationMeta},
     v2_2_1::{
@@ -30,6 +30,9 @@ use ocpi_types::{
 // The flat OCPI 2.1.1 credentials object (no `roles` array), aliased to keep it
 // distinct from the role-bearing 2.2.1 `Credentials` imported above.
 use ocpi_types::v2_1_1::Credentials as Credentials2111;
+// The role-less OCPI 2.1.1 version-details shape, aliased to keep it distinct
+// from the role-bearing 2.2.1 `VersionDetails` imported above.
+use ocpi_types::v2_1_1::VersionDetails as LegacyVersionDetails;
 use url::Url;
 
 fn token_type_str(t: TokenType) -> &'static str {
@@ -1900,6 +1903,71 @@ impl VersionFetcher for OcpiVersionFetcher {
                 .error_for_status()
                 .map_err(|e| FetchError::Transport(e.to_string()))?;
             let envelope: OcpiResponse<VersionDetails> = response
+                .json()
+                .await
+                .map_err(|e| FetchError::Invalid(e.to_string()))?;
+            envelope.data.ok_or_else(|| {
+                FetchError::Invalid("response envelope contained no data".to_string())
+            })
+        })
+    }
+}
+
+/// The same reqwest transport, fetching the **role-less OCPI 2.1.1** version
+/// catalogue for [`ocpi_server::Credentials2111Config::new_with_fetcher`].
+///
+/// The `/versions` list is identical across versions, so [`fetch_versions`] is
+/// the same as the 2.2.1 [`VersionFetcher`] path; only `fetch_version_details`
+/// differs — it parses the role-less [`ocpi_types::v2_1_1::VersionDetails`]
+/// (whose endpoints carry no `role`) that a faithful 2.1.1 partner emits.
+///
+/// [`fetch_versions`]: LegacyVersionFetcher::fetch_versions
+impl LegacyVersionFetcher for OcpiVersionFetcher {
+    fn fetch_versions<'a>(&'a self, url: &'a str, token: &'a str) -> FetchFuture<'a, Vec<Version>> {
+        Box::pin(async move {
+            let parsed = parse_fetch_url(url)?;
+            let response = self
+                .http
+                .get(parsed)
+                .header(
+                    "Authorization",
+                    fetch_auth_header(token, self.compat_raw_token),
+                )
+                .send()
+                .await
+                .map_err(|e| FetchError::Transport(e.to_string()))?
+                .error_for_status()
+                .map_err(|e| FetchError::Transport(e.to_string()))?;
+            let envelope: OcpiResponse<Vec<Version>> = response
+                .json()
+                .await
+                .map_err(|e| FetchError::Invalid(e.to_string()))?;
+            envelope.data.ok_or_else(|| {
+                FetchError::Invalid("response envelope contained no data".to_string())
+            })
+        })
+    }
+
+    fn fetch_version_details<'a>(
+        &'a self,
+        url: &'a str,
+        token: &'a str,
+    ) -> FetchFuture<'a, LegacyVersionDetails> {
+        Box::pin(async move {
+            let parsed = parse_fetch_url(url)?;
+            let response = self
+                .http
+                .get(parsed)
+                .header(
+                    "Authorization",
+                    fetch_auth_header(token, self.compat_raw_token),
+                )
+                .send()
+                .await
+                .map_err(|e| FetchError::Transport(e.to_string()))?
+                .error_for_status()
+                .map_err(|e| FetchError::Transport(e.to_string()))?;
+            let envelope: OcpiResponse<LegacyVersionDetails> = response
                 .json()
                 .await
                 .map_err(|e| FetchError::Invalid(e.to_string()))?;
