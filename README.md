@@ -81,7 +81,7 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 | Versions | ☑ | ☑ | ☐ |
 | Credentials | ◑ | ☑ | ☐ |
 | Locations | ◑ | ☑ | ☐ |
-| Sessions | ☐ | ☑ | ☐ |
+| Sessions | ◑ | ☑ | ☐ |
 | CDRs | ☐ | ☑ | ☐ |
 | Tariffs | ◑ | ☑ | ☐ |
 | Tokens | ◑ | ☑ | ☐ |

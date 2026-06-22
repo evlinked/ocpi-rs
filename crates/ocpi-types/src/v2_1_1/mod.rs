@@ -37,6 +37,7 @@
 
 mod credentials;
 mod locations;
+mod sessions;
 mod tariffs;
 mod tokens;
 mod versions;
@@ -46,6 +47,9 @@ pub use locations::{
     AdditionalGeoLocation, Capability, Connector, ConnectorFormat, ConnectorType, Evse,
     ExceptionalPeriod, Facility, Hours, Location, LocationType, ParkingRestriction, PowerType,
     RegularHours, Status, StatusSchedule,
+};
+pub use sessions::{
+    AuthMethod, CdrDimension, CdrDimensionType, ChargingPeriod, Session, SessionStatus,
 };
 pub use tariffs::{PriceComponent, Tariff, TariffDimensionType, TariffElement, TariffRestrictions};
 pub use tokens::{Token, TokenType};
