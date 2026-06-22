@@ -80,10 +80,10 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 |---|:--:|:--:|:--:|
 | Versions | ☑ | ☑ | ☐ |
 | Credentials | ☑ | ☑ | ☐ |
-| Locations | ☐ | ☑ | ☐ |
+| Locations | ◑ | ☑ | ☐ |
 | Sessions | ☐ | ☑ | ☐ |
 | CDRs | ☐ | ☑ | ☐ |
-| Tariffs | ☐ | ☑ | ☐ |
+| Tariffs | ◑ | ☑ | ☐ |
 | Tokens | ◑ | ☑ | ☐ |
 | Commands | ☐ | ☑ | ☐ |
 | ChargingProfiles | — | ☑ | ☐ |
