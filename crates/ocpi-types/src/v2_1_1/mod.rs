@@ -36,6 +36,7 @@
 //! level but out of spec — see [`Endpoint::is_valid_2_1_1`].
 
 mod cdrs;
+mod commands;
 mod credentials;
 mod locations;
 mod sessions;
@@ -44,6 +45,10 @@ mod tokens;
 mod versions;
 
 pub use cdrs::Cdr;
+pub use commands::{
+    CommandResponse, CommandResponseType, CommandType, ReserveNow, StartSession, StopSession,
+    UnlockConnector,
+};
 pub use credentials::Credentials;
 pub use locations::{
     AdditionalGeoLocation, Capability, Connector, ConnectorFormat, ConnectorType, Evse,
