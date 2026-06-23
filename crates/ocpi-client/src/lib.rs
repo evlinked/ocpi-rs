@@ -27,6 +27,9 @@ use ocpi_types::{
     version::{Version, VersionDetails, VersionNumber},
     OcpiResponse,
 };
+// The flat OCPI 2.1.1 credentials object (no `roles` array), aliased to keep it
+// distinct from the role-bearing 2.2.1 `Credentials` imported above.
+use ocpi_types::v2_1_1::Credentials as Credentials2111;
 // OCPI 2.1.1 module types are aliased so the 2.2.1 surface above keeps the
 // unqualified names. See `crate::get_locations_2_1_1` and friends.
 use ocpi_types::v2_1_1::{Connector as Connector2111, Evse as Evse2111, Location as Location2111};
@@ -335,6 +338,96 @@ impl OcpiClient {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+
+    // ── Credentials (OCPI 2.1.1, flat object) ──────────────────────────────────
+    //
+    // The 2.1.1 registration handshake uses the *flat* [`Credentials2111`]
+    // object — `token`/`url`/`business_details`/`party_id`/`country_code` at the
+    // top level, with no `roles` array. These methods mirror the 2.2.1 ones
+    // above but carry that shape on the wire; the Token A→B→C semantics are
+    // identical. `DELETE /credentials` carries no body, so the version-agnostic
+    // [`delete_credentials`](Self::delete_credentials) is reused for 2.1.1.
+    //
+    // Spec: OCPI 2.1.1 — *Credentials* module / *Registration* use-case.
+
+    /// Retrieve the remote 2.1.1 party's own credentials (`GET <url>`).
+    ///
+    /// `url` is the absolute URL of the remote credentials endpoint, obtained
+    /// from the role-less `VersionDetails.endpoints` after version negotiation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// envelope carries no data.
+    pub async fn get_credentials_2_1_1(&self, url: &str) -> Result<Credentials2111, ClientError> {
+        let parsed = url::Url::parse(url)?;
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<Credentials2111> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Register with a 2.1.1 remote party by `POST`-ing `credentials` to `url`.
+    ///
+    /// On success the remote returns a new flat [`Credentials2111`] object
+    /// carrying the token (Token C) the client must use for subsequent
+    /// requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, the
+    /// HTTP response is 405 (already registered), or the envelope carries no
+    /// data.
+    pub async fn register_2_1_1(
+        &self,
+        url: &str,
+        credentials: &Credentials2111,
+    ) -> Result<Credentials2111, ClientError> {
+        let parsed = url::Url::parse(url)?;
+        let response = self
+            .http
+            .post(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(credentials)
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<Credentials2111> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Rotate the 2.1.1 registration with the remote party (`PUT <url>`).
+    ///
+    /// On success the remote returns updated flat [`Credentials2111`] for the
+    /// client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, the
+    /// HTTP response is 405 (not yet registered), or the envelope carries no
+    /// data.
+    pub async fn update_credentials_2_1_1(
+        &self,
+        url: &str,
+        credentials: &Credentials2111,
+    ) -> Result<Credentials2111, ClientError> {
+        let parsed = url::Url::parse(url)?;
+        let response = self
+            .http
+            .put(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(credentials)
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<Credentials2111> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
     }
 
     // ── Sessions ──────────────────────────────────────────────────────────────
