@@ -29,6 +29,9 @@ use ocpi_types::v2_1_1::VersionDetails as LegacyVersionDetails;
 // The flat OCPI 2.1.1 credentials object (no `roles` array), aliased to keep it
 // distinct from the role-bearing 2.2.1 `Credentials` imported above.
 use ocpi_types::v2_1_1::Credentials as Credentials2111;
+// The OCPI 2.1.1 `Tariff` (no `country_code`/`party_id`/`type`/min-max price),
+// aliased to keep it distinct from the root-exported 2.2.1 `Tariff` above.
+use ocpi_types::v2_1_1::Tariff as Tariff2111;
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -1378,6 +1381,235 @@ impl TariffsHandler for TariffsConfig {
         party_id: &str,
         tariff_id: &str,
         tariff: Tariff,
+    ) -> Result<(), ServerError> {
+        self.put(country_code, party_id, tariff_id, tariff);
+        Ok(())
+    }
+
+    async fn delete_tariff(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        tariff_id: &str,
+    ) -> Result<(), ServerError> {
+        self.delete(country_code, party_id, tariff_id)
+    }
+}
+
+// ── Tariffs2111Handler (OCPI 2.1.1) ─────────────────────────────────────────────
+
+/// Handles the **OCPI 2.1.1** Tariffs module endpoints — the 2.1.1 counterpart
+/// to [`TariffsHandler`].
+///
+/// The transport paths are identical to 2.2.1: the Sender (CPO) interface is
+/// flat (`GET /tariffs`, §11.2.1) and the Receiver (eMSP) interface is a
+/// client-owned object keyed by `{country_code}/{party_id}/{tariff_id}`
+/// (§11.2.2). Only the [`Tariff2111`] object shape differs from 2.2.1 (no
+/// `country_code`/`party_id`/`type`/`min_price`/`max_price`).
+///
+/// This mirrors the 2.2.1 surface — `GET` (Sender list) + `GET`/`PUT`/`DELETE`
+/// (Receiver). The 2.1.1 spec additionally lists a Receiver `PATCH` (partial
+/// tariff updates); it is deferred for parity with the 2.2.1 router, which also
+/// omits it.
+///
+/// Spec: OCPI 2.1.1 — *Tariffs* module (`specs/ocpi/2.1.1/OCPI_2.1.1.pdf`, §11).
+#[allow(async_fn_in_trait)]
+pub trait Tariffs2111Handler {
+    /// Paginated list of 2.1.1 tariffs whose `last_updated` is in
+    /// `[date_from, date_to)` — Sender interface (`GET /tariffs`).
+    ///
+    /// Returns `(page_items, total_count)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the query cannot be executed.
+    async fn get_tariffs(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<Tariff2111>, u32), ServerError>;
+
+    /// Fetch a single 2.1.1 tariff by its composite key — Receiver interface
+    /// (`GET /tariffs/{country_code}/{party_id}/{tariff_id}`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when the tariff does not exist.
+    async fn get_tariff(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        tariff_id: &str,
+    ) -> Result<Tariff2111, ServerError>;
+
+    /// Create or replace a 2.1.1 tariff — Receiver interface (`PUT`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] on storage failure.
+    async fn put_tariff(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        tariff_id: &str,
+        tariff: Tariff2111,
+    ) -> Result<(), ServerError>;
+
+    /// Delete a 2.1.1 tariff — Receiver interface (`DELETE`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when the tariff does not exist.
+    async fn delete_tariff(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        tariff_id: &str,
+    ) -> Result<(), ServerError>;
+}
+
+// ── Tariffs2111Config ───────────────────────────────────────────────────────────
+
+/// Thread-safe in-memory **OCPI 2.1.1** tariffs store for use with
+/// [`http::tariffs_2_1_1_router`], the 2.1.1 counterpart to [`TariffsConfig`].
+///
+/// Tariffs are keyed by `"{country_code}/{party_id}/{tariff_id}"`. Wrap in
+/// `Arc` to share across axum handlers or multiple threads.
+pub struct Tariffs2111Config {
+    tariffs: std::sync::RwLock<std::collections::HashMap<String, Tariff2111>>,
+}
+
+impl std::fmt::Debug for Tariffs2111Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tariffs2111Config")
+            .field(
+                "tariff_count",
+                &self.tariffs.read().map(|m| m.len()).unwrap_or(0),
+            )
+            .finish()
+    }
+}
+
+impl Tariffs2111Config {
+    /// Create an empty 2.1.1 tariffs store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tariffs: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn composite_key(country_code: &str, party_id: &str, tariff_id: &str) -> String {
+        format!("{country_code}/{party_id}/{tariff_id}")
+    }
+
+    /// Insert or replace a tariff.
+    pub fn put(&self, country_code: &str, party_id: &str, tariff_id: &str, tariff: Tariff2111) {
+        let key = Self::composite_key(country_code, party_id, tariff_id);
+        self.tariffs
+            .write()
+            .expect("lock not poisoned")
+            .insert(key, tariff);
+    }
+
+    /// Retrieve a tariff by its composite key.
+    #[must_use]
+    pub fn get(&self, country_code: &str, party_id: &str, tariff_id: &str) -> Option<Tariff2111> {
+        let key = Self::composite_key(country_code, party_id, tariff_id);
+        self.tariffs
+            .read()
+            .expect("lock not poisoned")
+            .get(&key)
+            .cloned()
+    }
+
+    /// Remove a tariff by its composite key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] if no tariff matches the key.
+    pub fn delete(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        tariff_id: &str,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, tariff_id);
+        let mut map = self.tariffs.write().expect("lock not poisoned");
+        if map.remove(&key).is_some() {
+            Ok(())
+        } else {
+            Err(ServerError::NotFound)
+        }
+    }
+
+    /// Return a filtered and paginated slice of tariffs.
+    ///
+    /// Filters by `last_updated >= date_from` and (if provided)
+    /// `last_updated < date_to`. Results are sorted by `last_updated`.
+    ///
+    /// Returns `(page_items, total_matching_count)`.
+    #[must_use]
+    pub fn list(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Tariff2111>, u32) {
+        let map = self.tariffs.read().expect("lock not poisoned");
+        let mut filtered: Vec<&Tariff2111> = map
+            .values()
+            .filter(|t| t.last_updated >= date_from && date_to.is_none_or(|dt| t.last_updated < dt))
+            .collect();
+        filtered.sort_by_key(|t| t.last_updated);
+        let total = filtered.len() as u32;
+        let page: Vec<Tariff2111> = filtered
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        (page, total)
+    }
+}
+
+impl Default for Tariffs2111Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(async_fn_in_trait)]
+impl Tariffs2111Handler for Tariffs2111Config {
+    async fn get_tariffs(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<Tariff2111>, u32), ServerError> {
+        Ok(self.list(date_from, date_to, offset, limit))
+    }
+
+    async fn get_tariff(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        tariff_id: &str,
+    ) -> Result<Tariff2111, ServerError> {
+        self.get(country_code, party_id, tariff_id)
+            .ok_or(ServerError::NotFound)
+    }
+
+    async fn put_tariff(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        tariff_id: &str,
+        tariff: Tariff2111,
     ) -> Result<(), ServerError> {
         self.put(country_code, party_id, tariff_id, tariff);
         Ok(())
@@ -2836,11 +3068,13 @@ pub mod http {
     use crate::{
         token_type_str, CdrsConfig, ChargingProfilesConfig, ChargingProfilesHandler,
         CommandsConfig, CommandsHandler, Credentials2111Config, CredentialsConfig,
-        HubClientInfoConfig, LocationsConfig, ServerError, SessionsConfig, TariffsConfig,
-        TokensConfig, VersionsConfig,
+        HubClientInfoConfig, LocationsConfig, ServerError, SessionsConfig, Tariffs2111Config,
+        TariffsConfig, TokensConfig, VersionsConfig,
     };
     // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
     use ocpi_types::v2_1_1::Credentials as Credentials2111;
+    // The OCPI 2.1.1 `Tariff` served by `tariffs_2_1_1_router`.
+    use ocpi_types::v2_1_1::Tariff as Tariff2111;
 
     // ── Versions ──────────────────────────────────────────────────────────────
 
@@ -3538,6 +3772,120 @@ pub mod http {
             Err(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(OcpiResponse::<Tariff>::error(
+                    OcpiStatusCode::ServerError,
+                    "internal error",
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    // ── Tariffs (OCPI 2.1.1) ────────────────────────────────────────────────
+
+    /// Build an axum router for the **OCPI 2.1.1** Tariffs module, the 2.1.1
+    /// counterpart to [`tariffs_router`].
+    ///
+    /// Exposes:
+    /// - `GET    /tariffs` — paginated list (Sender interface, CPO; §11.2.1)
+    /// - `GET    /tariffs/{country_code}/{party_id}/{tariff_id}` — single tariff
+    /// - `PUT    /tariffs/{country_code}/{party_id}/{tariff_id}` — upsert
+    /// - `DELETE /tariffs/{country_code}/{party_id}/{tariff_id}` — remove
+    ///
+    /// Paths are identical to 2.2.1; only the [`Tariff2111`] object shape
+    /// differs. The 2.1.1 Receiver `PATCH` (partial updates, §11.2.2) is
+    /// deferred for parity with [`tariffs_router`].
+    pub fn tariffs_2_1_1_router(config: Arc<Tariffs2111Config>) -> Router {
+        Router::new()
+            .route("/tariffs", get(tariffs_2_1_1_list))
+            .route(
+                "/tariffs/{country_code}/{party_id}/{tariff_id}",
+                get(tariffs_2_1_1_get)
+                    .put(tariffs_2_1_1_put)
+                    .delete(tariffs_2_1_1_delete),
+            )
+            .with_state(config)
+    }
+
+    async fn tariffs_2_1_1_list(
+        State(cfg): State<Arc<Tariffs2111Config>>,
+        Query(params): Query<PaginatedParams>,
+    ) -> Response {
+        use ocpi_types::chrono::TimeZone as _;
+        let date_from = params.date_from.unwrap_or_else(|| {
+            ocpi_types::Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .single()
+                .expect("epoch is valid")
+        });
+        let offset = params.offset.unwrap_or(0);
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
+
+        let (items, total) = cfg.list(date_from, params.date_to, offset, limit);
+        let page = OcpiPaged::new(items, offset, limit, total);
+        let next_offset = page.next_offset();
+        let body = page.into_response();
+
+        let mut response = Json(body).into_response();
+        let hdrs = response.headers_mut();
+        if let Ok(v) = total.to_string().parse() {
+            hdrs.insert("x-total-count", v);
+        }
+        if let Ok(v) = limit.to_string().parse() {
+            hdrs.insert("x-limit", v);
+        }
+        if let Some(next_off) = next_offset {
+            let link = format!("</tariffs?offset={next_off}&limit={limit}>; rel=\"next\"");
+            if let Ok(v) = link.parse() {
+                hdrs.insert("link", v);
+            }
+        }
+
+        response
+    }
+
+    async fn tariffs_2_1_1_get(
+        State(cfg): State<Arc<Tariffs2111Config>>,
+        Path((country_code, party_id, tariff_id)): Path<(String, String, String)>,
+    ) -> Response {
+        match cfg.get(&country_code, &party_id, &tariff_id) {
+            Some(tariff) => Json(OcpiResponse::success(tariff)).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<Tariff2111>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!("tariff {tariff_id} not found"),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn tariffs_2_1_1_put(
+        State(cfg): State<Arc<Tariffs2111Config>>,
+        Path((country_code, party_id, tariff_id)): Path<(String, String, String)>,
+        Json(tariff): Json<Tariff2111>,
+    ) -> Response {
+        cfg.put(&country_code, &party_id, &tariff_id, tariff);
+        Json(OcpiResponse::<Tariff2111>::success_empty()).into_response()
+    }
+
+    async fn tariffs_2_1_1_delete(
+        State(cfg): State<Arc<Tariffs2111Config>>,
+        Path((country_code, party_id, tariff_id)): Path<(String, String, String)>,
+    ) -> Response {
+        match cfg.delete(&country_code, &party_id, &tariff_id) {
+            Ok(()) => Json(OcpiResponse::<Tariff2111>::success_empty()).into_response(),
+            Err(ServerError::NotFound) => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<Tariff2111>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!("tariff {tariff_id} not found"),
+                )),
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<Tariff2111>::error(
                     OcpiStatusCode::ServerError,
                     "internal error",
                 )),

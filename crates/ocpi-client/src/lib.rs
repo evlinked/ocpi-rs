@@ -30,6 +30,9 @@ use ocpi_types::{
 // The flat OCPI 2.1.1 credentials object (no `roles` array), aliased to keep it
 // distinct from the role-bearing 2.2.1 `Credentials` imported above.
 use ocpi_types::v2_1_1::Credentials as Credentials2111;
+// The OCPI 2.1.1 `Tariff` (no `country_code`/`party_id`/`type`/min-max price),
+// aliased to keep it distinct from the root-exported 2.2.1 `Tariff` above.
+use ocpi_types::v2_1_1::Tariff as Tariff2111;
 use url::Url;
 
 fn token_type_str(t: TokenType) -> &'static str {
@@ -1080,6 +1083,186 @@ impl OcpiClient {
     /// Returns [`ClientError::NotFound`] when the remote responds with HTTP 404.
     /// Returns [`ClientError`] for other failures.
     pub async fn delete_tariff(
+        &self,
+        url: &str,
+        country_code: &str,
+        party_id: &str,
+        tariff_id: &str,
+    ) -> Result<(), ClientError> {
+        let endpoint = format!(
+            "{}/{}/{}/{}",
+            url.trim_end_matches('/'),
+            country_code,
+            party_id,
+            tariff_id,
+        );
+        let response = self
+            .http
+            .delete(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        response.error_for_status()?;
+        Ok(())
+    }
+
+    // ── Tariffs (OCPI 2.1.1) ────────────────────────────────────────────────
+
+    /// Fetch a paginated list of **OCPI 2.1.1** tariffs from a CPO sender
+    /// (`GET {url}`), the 2.1.1 counterpart to [`get_tariffs`](Self::get_tariffs).
+    ///
+    /// The 2.1.1 Sender (CPO) interface path is flat — identical to 2.2.1
+    /// (`GET /tariffs`); only the [`Tariff2111`] object shape differs (no
+    /// `country_code`/`party_id`/`type`/`min_price`/`max_price`). `params`
+    /// carries `date_from`, `date_to`, `offset`, and `limit`.
+    ///
+    /// Spec: OCPI 2.1.1 — *Tariffs* §11.2.1 (CPO Interface, `GET`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn get_tariffs_2_1_1(
+        &self,
+        url: &str,
+        params: PaginatedParams,
+    ) -> Result<(Vec<Tariff2111>, PaginationMeta), ClientError> {
+        let mut parsed = url::Url::parse(url)?;
+        if let Some(date_from) = params.date_from {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_from", &date_from.to_rfc3339());
+        }
+        if let Some(date_to) = params.date_to {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_to", &date_to.to_rfc3339());
+        }
+        if let Some(offset) = params.offset {
+            parsed
+                .query_pairs_mut()
+                .append_pair("offset", &offset.to_string());
+        }
+        if let Some(limit) = params.limit {
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?
+            .error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<Tariff2111>> = response.json().await?;
+        let tariffs = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((tariffs, meta))
+    }
+
+    /// Fetch a single **OCPI 2.1.1** tariff from an eMSP receiver
+    /// (`GET {url}/{country_code}/{party_id}/{tariff_id}`).
+    ///
+    /// The 2.1.1 Receiver (eMSP) interface is a client-owned object, so the
+    /// path carries `{country_code}/{party_id}` — identical to 2.2.1
+    /// (§11.2.2); only the [`Tariff2111`] shape differs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// Returns [`ClientError`] for other failures.
+    pub async fn get_tariff_2_1_1(
+        &self,
+        url: &str,
+        country_code: &str,
+        party_id: &str,
+        tariff_id: &str,
+    ) -> Result<Tariff2111, ClientError> {
+        let endpoint = format!(
+            "{}/{}/{}/{}",
+            url.trim_end_matches('/'),
+            country_code,
+            party_id,
+            tariff_id,
+        );
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Tariff2111> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Push or replace an **OCPI 2.1.1** tariff on an eMSP receiver
+    /// (`PUT {url}/{country_code}/{party_id}/{tariff_id}`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn put_tariff_2_1_1(
+        &self,
+        url: &str,
+        country_code: &str,
+        party_id: &str,
+        tariff_id: &str,
+        tariff: &Tariff2111,
+    ) -> Result<(), ClientError> {
+        let endpoint = format!(
+            "{}/{}/{}/{}",
+            url.trim_end_matches('/'),
+            country_code,
+            party_id,
+            tariff_id,
+        );
+        self.http
+            .put(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .json(tariff)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Delete an **OCPI 2.1.1** tariff on an eMSP receiver
+    /// (`DELETE {url}/{country_code}/{party_id}/{tariff_id}`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// Returns [`ClientError`] for other failures.
+    pub async fn delete_tariff_2_1_1(
         &self,
         url: &str,
         country_code: &str,
