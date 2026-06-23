@@ -79,7 +79,7 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 | Module | 2.1.1 | 2.2.1 | 2.3.0 |
 |---|:--:|:--:|:--:|
 | Versions | ☑ | ☑ | ☐ |
-| Credentials | ◑ | ☑ | ☐ |
+| Credentials | ☑ | ☑ | ☐ |
 | Locations | ◑ | ☑ | ☐ |
 | Sessions | ◑ | ☑ | ☐ |
 | CDRs | ◑ | ☑ | ☐ |
@@ -92,7 +92,7 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 
 ☑ = types + client sender methods + server receiver handler/router shipped for 2.2.1. The ChargingProfiles **Sender** interface — the CPO-pushes-`ActiveChargingProfile` PUT ([#75](https://github.com/evlinked/ocpi-rs/issues/75)) — is now complete via `charging_profiles_sender_router` + `OcpiClient::put_active_charging_profile`.
 
-M7 (OCPI 2.1.1) is underway. The **Versions** module is now end-to-end for 2.1.1: the role-less foundation (`v2_1_1::Endpoint` / `v2_1_1::VersionDetails`, [#86](https://github.com/evlinked/ocpi-rs/issues/86)), the client `negotiate_version` helper ([#103](https://github.com/evlinked/ocpi-rs/pull/103)), and the server advertising both 2.1.1 and 2.2.1 via `VersionsConfig::add_legacy_version` so `GET /versions/2.1.1` serves a role-less catalogue ([#99](https://github.com/evlinked/ocpi-rs/issues/99)). The **Commands** data types ([#93](https://github.com/evlinked/ocpi-rs/issues/93)) have landed for 2.1.1 (`CommandType`, `CommandResponseType`, `CommandResponse`, `ReserveNow`/`StartSession`/`StopSession`/`UnlockConnector`) — faithful to the spec's single-`CommandResponseType` model (no 2.2 `CommandResultType` split). Remaining 2.1.1 module types are tracked in [#87](https://github.com/evlinked/ocpi-rs/issues/87)–[#93](https://github.com/evlinked/ocpi-rs/issues/93).
+M7 (OCPI 2.1.1) is underway. The **Versions** module is now end-to-end for 2.1.1: the role-less foundation (`v2_1_1::Endpoint` / `v2_1_1::VersionDetails`, [#86](https://github.com/evlinked/ocpi-rs/issues/86)), the client `negotiate_version` helper ([#103](https://github.com/evlinked/ocpi-rs/pull/103)), and the server advertising both 2.1.1 and 2.2.1 via `VersionsConfig::add_legacy_version` so `GET /versions/2.1.1` serves a role-less catalogue ([#99](https://github.com/evlinked/ocpi-rs/issues/99)). The **Credentials** module is now end-to-end for 2.1.1 over the *flat* object: client sender methods (`OcpiClient::{register,get_credentials,update_credentials}_2_1_1`) and the server receiver `credentials_2_1_1_router` + `Credentials2111Config`, running the Token A→B→C handshake ([#112](https://github.com/evlinked/ocpi-rs/issues/112)). The 2.1.1 registration *fetch-back* (the role-less `/versions` callback) is deferred — a 2.1.1 partner emits role-less version details that the role-bearing `VersionFetcher` cannot model; it is tracked as a follow-up. The **Commands** data types ([#93](https://github.com/evlinked/ocpi-rs/issues/93)) have landed for 2.1.1 (`CommandType`, `CommandResponseType`, `CommandResponse`, `ReserveNow`/`StartSession`/`StopSession`/`UnlockConnector`) — faithful to the spec's single-`CommandResponseType` model (no 2.2 `CommandResultType` split). Remaining 2.1.1 module types are tracked in [#89](https://github.com/evlinked/ocpi-rs/issues/89)–[#93](https://github.com/evlinked/ocpi-rs/issues/93).
 
 ## How this repo is built
 
