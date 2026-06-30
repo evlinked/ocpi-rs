@@ -5,6 +5,49 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-06-30 — M7 2.1.1 Sessions client+server wiring (issue #120, Sessions slice)
+
+- **Sync:** 1 open nightly PR (#132, Tariffs 2.1.1, `needs-human` — owner's to
+  merge, not my branch; left untouched) + 1 dependabot PR (#127). Under the
+  2-PR cap, so took a fresh feature issue. #126 (run-21 runbook, P1) is a
+  meta/queue-drain issue whose DoD is met (PRs #116/#117/#118/#119/#121 all
+  merged) — flagged to close in the report.
+- **Issue:** #120 — 2.1.1 Sessions + CDRs wiring. Scoped to the **Sessions**
+  client+server slice (issue itself flags >500 LOC; CDRs deferred to a split
+  follow-up).
+- **Branch:** `claude/dazzling-maxwell-g84gi7` (harness-designated push branch;
+  overrides the playbook's `nightly/*` naming for this session).
+- **CI (local):** fmt ✅ clippy `-D warnings` ✅ test `--all-features` ✅ (all
+  suites, +2 new) doc `-D warnings` ✅. `cargo deny` not installed locally but
+  **no Cargo.toml/lock change** → deny unaffected, no `needs-human`.
+- **What shipped (~548 prod LOC + 241 test):**
+  - Server: `Sessions2111Handler` trait + `Sessions2111Config` in-memory store
+    + `http::sessions_2_1_1_router` (Sender `GET /sessions`; Receiver
+    GET/PUT/PATCH on `/sessions/{country_code}/{party_id}/{session_id}`).
+  - Client: `get_sessions_2_1_1` (paginated sender list) + `get/put/patch
+    _session_2_1_1` (receiver getters/setters), over `v2_1_1::Session`.
+  - Test `m7_sessions_2_1_1.rs`: in-process axum loopback driven through
+    `OcpiClient` (list pagination + GET/PUT/PATCH + 2×404) + a wire-shape
+    assertion that no 2.2+ field leaks.
+  - README: Sessions 2.1.1 ◑ → ☑ + M7 narrative sentence.
+- **Spec-fidelity catch (same class as #132):** issue text said the 2.1.1
+  receiver path is **flat** `/sessions/{session_id}`. The vendored PDF (§9.2.2)
+  says otherwise — *"Sessions is a client owned object, so the end-points need
+  to contain the required extra fields: {party_id} and {country_code}"* →
+  `/sessions/{country_code}/{party_id}/{session_id}`. The `{cc}/{party}` URL
+  segments existed in 2.1.1/2.0 for client-owned objects; **2.2 added the
+  `OCPI-to/from-*` routing _headers_, not the path segments.** Implemented to
+  the spec. No `charging_preferences` route (2.2+).
+- **PDF tooling note:** the 2.1.1 spec is a PDF (no asciidoc); `pdftotext`,
+  `pypdf`, `poppler` all unavailable/broken in the runner. Extracted text with
+  a stdlib `zlib`+regex script (saved approach in LEARNINGS) — that's how the
+  §9.2.2 path was verified verbatim.
+- **Next:** the CDRs half of #120 (split follow-up — `get_cdrs_2_1_1` +
+  `post_cdr_2_1_1` + `Cdrs2111` receiver router; CDR receiver is `POST /cdrs` +
+  `GET /cdrs/{id}` per §10.2.2, the 2.1.1 CDR has `auth_id`/embedded location/
+  single `total_cost`). Then #123 (Tokens) / #124 (Commands) / #125 (Locations
+  receiver). Close #126 once #132 + this land.
+
 ## 2026-06-21 (run 19) — unblock the M7 type queue: resolve conflicts + complete #99 server-advertise
 
 - **Triage:** Sync found 2 open nightly PRs (#97 Tokens, #98 Tariffs), **both
