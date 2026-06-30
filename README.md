@@ -82,7 +82,7 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 | Credentials | ☑ | ☑ | ☐ |
 | Locations | ◑ | ☑ | ☐ |
 | Sessions | ◑ | ☑ | ☐ |
-| CDRs | ☐ | ☑ | ☐ |
+| CDRs | ◑ | ☑ | ☐ |
 | Tariffs | ◑ | ☑ | ☐ |
 | Tokens | ◑ | ☑ | ☐ |
 | Commands | ◑ | ☑ | ☐ |
