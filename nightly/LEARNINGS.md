@@ -15,6 +15,22 @@ cycle. Keep entries short and specific. Prune contradictions.
   trusted PR is auto-readied by the gate, but mark it ready yourself to be safe.
 - **Run `/simplify` (gstack) before opening a PR or reviewing one.** Tighten the
   diff first so the owner reviews clean, minimal changes.
+- **The size cap that trips `needs-human` is 800 *additions* (not net LOC).**
+  `pr-ready-gate.yml:34` sets `SIZE_CAP="800"` and compares it against the PR's
+  `.additions` (deletions don't count). A PR ≤ 800 additions touching no guarded
+  path is trusted/non-risky → auto-readyable. A full module client+server wiring
+  runs ~700–900 additions, so it's right at the boundary: keep a single-module
+  PR **under 800 additions** (defer the test file or split sender/receiver if
+  needed) to stay auto-mergeable; #134 (Sessions, 850) tripped the cap while the
+  Tariffs re-delivery (723) cleared it. The guarded-path regex also matches
+  **any `*.yml`** and `Cargo.lock`, so never staple those onto feature work.
+- **Rescue a `dirty` nightly PR whose only dep-path change is now on `main`.**
+  When a rotted PR's sole guarded-path edit is a Cargo.lock bump that a later PR
+  already merged (e.g. #132's quinn-proto bump, landed via #131), cherry-picking
+  it onto current `main` **auto-resolves Cargo.lock to a no-op** (both sides made
+  the identical change) — the resulting re-delivery carries no dep change and no
+  `needs-human`. Resolve the remaining additive conflicts keep-both, and prefer
+  `main`'s copy of any narrative/README prose the stale branch would regress.
 - **The gate's auto-mark-ready is a no-op — ALWAYS ready your own PR explicitly.**
   `pr-ready-gate.yml` (post-#102) runs `gh pr ready` for trusted non-risky PRs,
   the `gate` check-run goes **green**, but the draft is **not** flipped: under
