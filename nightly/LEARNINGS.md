@@ -136,6 +136,28 @@ cycle. Keep entries short and specific. Prune contradictions.
 
 ## OCPI domain
 
+- **2.1.1 (and 2.0) receiver paths for *client-owned* objects ARE
+  `{country_code}/{party_id}/{object_id}` — NOT flat.** Recurring trap: the
+  grooming issues for 2.1.1 wiring say to use a "flat 2.1.1 path"; the spec
+  disagrees. OCPI 2.1.1 §3.1.4 *Client owned object push* defines the URL as
+  `{base}/{endpoint}/{country-code}/{party-id}/{object-id}`, and §8.2.2
+  (Locations), §9.2.2 (Sessions), §11.2.2 (Tariffs), §12.2.1 (Tokens) each
+  repeat *"X is a client owned object, so the end-points need to contain the
+  required extra fields: {party_id} and {country_code}"*. So **2.1.1 receiver
+  transport paths are identical to 2.2.1** — what 2.2 actually added was the
+  `OCPI-to/from-party-id/country-code` *headers* (for hub routing), not the URL
+  segments. Caught for Tariffs (#132) and Sessions (#120). When wiring any
+  2.1.1 client-owned module, mirror the 2.2.1 router path; only the object
+  *shape* differs. (Server-owned modules like CDRs `POST /cdrs` + `GET
+  /cdrs/{id}` stay flat — the push is a POST that the receiver names.)
+- **Reading the 2.1.1 spec: it's a PDF, not asciidoc.** `specs/ocpi/2.1.1/`
+  holds only `OCPI_2.1.1.pdf`. In the remote runner `pdftotext`/`poppler` are
+  absent and `pypdf` import panics (cryptography/pyo3). Working extraction is a
+  stdlib script: `re.finditer(rb'stream\r?\n', data)` → `zlib.decompress` each
+  stream → pull text from `(...)` literals (the `Tj`/`TJ` operands). It garbles
+  ligatures (`\002`/`\050` etc.) but the endpoint tables and §-prose come
+  through cleanly enough to verify paths verbatim. Saved as
+  `scratchpad/pdfx.py` during run on 2026-06-30.
 - **Single-letter enum values (e.g. `W`, `A`) need explicit `#[serde(rename = "...")]`**, not `rename_all`. SCREAMING_SNAKE_CASE would produce the same result for single-letter uppercase variants, but explicit renames make intent clear and prevent accidental breakage if a variant is renamed. Use `#[serde(rename = "W")]` on variant `W` (not `rename_all = "SCREAMING_SNAKE_CASE"`) when wire values are single uppercase letters.
 - **M6 is Commands + ChargingProfiles + HubClientInfo** per the README milestone ("M6 — Commands + ChargingProfiles + HubClientInfo → OCPI 2.2.1 complete"). ChargingProfiles was inadvertently skipped in runs 6-8. Always diff README milestones vs implemented types when declaring a milestone complete.
 - **`status_code` is an integer in the body**, independent of the HTTP status.

@@ -35,6 +35,11 @@ use ocpi_types::v2_1_1::Endpoint as Endpoint2111;
 // The OCPI 2.1.1 `Tariff` (no `country_code`/`party_id`/`type`/min-max price),
 // aliased to keep it distinct from the root-exported 2.2.1 `Tariff` above.
 use ocpi_types::v2_1_1::Tariff as Tariff2111;
+// The OCPI 2.1.1 Session object (auth_id, embedded location, one-word
+// start/end timestamps, no charging-preferences), aliased to keep it distinct
+// from the role-bearing 2.2.1 `Session` imported above. See
+// [`Sessions2111Config`].
+use ocpi_types::v2_1_1::Session as Session2111;
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -1343,6 +1348,247 @@ impl CdrsHandler for CdrsConfig {
 
     async fn post_cdr(&self, cdr: Cdr) -> Result<String, ServerError> {
         Ok(self.store(cdr))
+    }
+}
+
+// ── Sessions2111Handler (OCPI 2.1.1) ────────────────────────────────────────────
+
+/// Handles the OCPI **2.1.1** Sessions module endpoints.
+///
+/// Implements both the **sender** interface (CPO exposes `GET /sessions`) and
+/// the **receiver** interface (eMSP exposes `GET/PUT/PATCH
+/// /sessions/{country_code}/{party_id}/{session_id}`).
+///
+/// ## Delta from the 2.2.1 [`SessionsHandler`]
+///
+/// The transport is otherwise identical — per OCPI 2.1.1 §9.2.2 *"Sessions is
+/// a client owned object, so the end-points need to contain the required extra
+/// fields: {party_id} and {country_code}"*, so the receiver path carries the
+/// `{country_code}/{party_id}/{session_id}` segments exactly as in 2.2.1. The
+/// `{country_code}/{party_id}` URL segments predate the 2.2 `OCPI-to/from-*`
+/// routing *headers*. Only the payload differs: the 2.1.1 [`Session2111`]
+/// object (`auth_id`, embedded `location`, one-word `start_datetime`). 2.1.1
+/// has **no** `charging_preferences` endpoint (that arrived in 2.2).
+///
+/// Spec: OCPI 2.1.1 — *Sessions* module (§9), `specs/ocpi/2.1.1/OCPI_2.1.1.pdf`.
+#[allow(async_fn_in_trait)]
+pub trait Sessions2111Handler {
+    /// Paginated list of 2.1.1 sessions whose `last_updated` is in
+    /// `[date_from, date_to)` — sender interface (`GET /sessions`).
+    ///
+    /// Returns `(page_items, total_count)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the query cannot be executed.
+    async fn get_sessions(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<Session2111>, u32), ServerError>;
+
+    /// Fetch a single 2.1.1 session by its composite key — receiver interface
+    /// (`GET /sessions/{country_code}/{party_id}/{session_id}`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when the session does not exist.
+    async fn get_session(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        session_id: &str,
+    ) -> Result<Session2111, ServerError>;
+
+    /// Create or replace a 2.1.1 session — receiver interface (`PUT`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] on storage failure.
+    async fn put_session(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        session_id: &str,
+        session: Session2111,
+    ) -> Result<(), ServerError>;
+
+    /// Apply a JSON merge-patch (RFC 7396) to an existing 2.1.1 session —
+    /// receiver interface (`PATCH`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when the session does not exist, or
+    /// [`ServerError::NotImplemented`] if serialization fails.
+    async fn patch_session(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        session_id: &str,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError>;
+}
+
+// ── Sessions2111Config (OCPI 2.1.1) ─────────────────────────────────────────────
+
+/// Thread-safe in-memory **OCPI 2.1.1** sessions store for use with
+/// [`http::sessions_2_1_1_router`].
+///
+/// Mirrors [`SessionsConfig`] but stores the 2.1.1 [`Session2111`] shape.
+/// Sessions are keyed by `"{country_code}/{party_id}/{session_id}"`. Wrap in
+/// `Arc` to share across axum handlers or multiple threads.
+pub struct Sessions2111Config {
+    sessions: std::sync::RwLock<std::collections::HashMap<String, Session2111>>,
+}
+
+impl std::fmt::Debug for Sessions2111Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sessions2111Config")
+            .field(
+                "session_count",
+                &self.sessions.read().map(|m| m.len()).unwrap_or(0),
+            )
+            .finish()
+    }
+}
+
+impl Sessions2111Config {
+    /// Create an empty 2.1.1 sessions store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            sessions: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn composite_key(country_code: &str, party_id: &str, session_id: &str) -> String {
+        format!("{country_code}/{party_id}/{session_id}")
+    }
+
+    /// Insert or replace a session.
+    pub fn put(&self, country_code: &str, party_id: &str, session_id: &str, session: Session2111) {
+        let key = Self::composite_key(country_code, party_id, session_id);
+        self.sessions
+            .write()
+            .expect("lock not poisoned")
+            .insert(key, session);
+    }
+
+    /// Retrieve a session by its composite key.
+    #[must_use]
+    pub fn get(&self, country_code: &str, party_id: &str, session_id: &str) -> Option<Session2111> {
+        let key = Self::composite_key(country_code, party_id, session_id);
+        self.sessions
+            .read()
+            .expect("lock not poisoned")
+            .get(&key)
+            .cloned()
+    }
+
+    /// Apply a JSON merge-patch to an existing session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] if no session matches the key.
+    pub fn patch_json(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        session_id: &str,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, session_id);
+        let mut map = self.sessions.write().expect("lock not poisoned");
+        let session = map.get(&key).ok_or(ServerError::NotFound)?;
+        let mut base = ocpi_types::serde_json::to_value(session.clone())
+            .map_err(|_| ServerError::NotImplemented("patch serialize"))?;
+        json_merge(&mut base, partial);
+        let updated: Session2111 = ocpi_types::serde_json::from_value(base)
+            .map_err(|_| ServerError::NotImplemented("patch deserialize"))?;
+        map.insert(key, updated);
+        Ok(())
+    }
+
+    /// Return a filtered and paginated slice of sessions.
+    ///
+    /// Filters by `last_updated >= date_from` and (if provided)
+    /// `last_updated < date_to`. Results are sorted by `last_updated`.
+    ///
+    /// Returns `(page_items, total_matching_count)`.
+    #[must_use]
+    pub fn list(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Session2111>, u32) {
+        let map = self.sessions.read().expect("lock not poisoned");
+        let mut filtered: Vec<&Session2111> = map
+            .values()
+            .filter(|s| s.last_updated >= date_from && date_to.is_none_or(|dt| s.last_updated < dt))
+            .collect();
+        filtered.sort_by_key(|s| s.last_updated);
+        let total = filtered.len() as u32;
+        let page: Vec<Session2111> = filtered
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        (page, total)
+    }
+}
+
+impl Default for Sessions2111Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(async_fn_in_trait)]
+impl Sessions2111Handler for Sessions2111Config {
+    async fn get_sessions(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<Session2111>, u32), ServerError> {
+        Ok(self.list(date_from, date_to, offset, limit))
+    }
+
+    async fn get_session(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        session_id: &str,
+    ) -> Result<Session2111, ServerError> {
+        self.get(country_code, party_id, session_id)
+            .ok_or(ServerError::NotFound)
+    }
+
+    async fn put_session(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        session_id: &str,
+        session: Session2111,
+    ) -> Result<(), ServerError> {
+        self.put(country_code, party_id, session_id, session);
+        Ok(())
+    }
+
+    async fn patch_session(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        session_id: &str,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError> {
+        self.patch_json(country_code, party_id, session_id, partial)
     }
 }
 
@@ -3238,13 +3484,15 @@ pub mod http {
     use crate::{
         token_type_str, CdrsConfig, ChargingProfilesConfig, ChargingProfilesHandler,
         CommandsConfig, CommandsHandler, Credentials2111Config, CredentialsConfig,
-        HubClientInfoConfig, LocationsConfig, ServerError, SessionsConfig, Tariffs2111Config,
-        TariffsConfig, TokensConfig, VersionsConfig,
+        HubClientInfoConfig, LocationsConfig, ServerError, Sessions2111Config, SessionsConfig,
+        Tariffs2111Config, TariffsConfig, TokensConfig, VersionsConfig,
     };
     // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
     use ocpi_types::v2_1_1::Credentials as Credentials2111;
     // The OCPI 2.1.1 `Tariff` served by `tariffs_2_1_1_router`.
     use ocpi_types::v2_1_1::Tariff as Tariff2111;
+    // The OCPI 2.1.1 Session object served by `sessions_2_1_1_router`.
+    use ocpi_types::v2_1_1::Session as Session2111;
 
     // ── Versions ──────────────────────────────────────────────────────────────
 
@@ -3771,6 +4019,122 @@ pub mod http {
             Err(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(OcpiResponse::<ChargingPreferencesResponse>::error(
+                    OcpiStatusCode::ServerError,
+                    "internal error",
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    // ── Sessions (2.1.1) ───────────────────────────────────────────────────────
+
+    /// Build an axum router for the **OCPI 2.1.1** Sessions module.
+    ///
+    /// Exposes:
+    /// - `GET   /sessions` — paginated list (sender interface, CPO)
+    /// - `GET   /sessions/{country_code}/{party_id}/{session_id}` — single
+    /// - `PUT   /sessions/{country_code}/{party_id}/{session_id}` — upsert
+    /// - `PATCH /sessions/{country_code}/{party_id}/{session_id}` — merge-patch
+    ///
+    /// The path layout is identical to the 2.2.1 [`sessions_router`] — per OCPI
+    /// 2.1.1 §9.2.2 Sessions is a client-owned object whose receiver endpoints
+    /// carry the `{country_code}/{party_id}/{session_id}` segments. There is
+    /// **no** `charging_preferences` route (a 2.2 addition). Only the payload
+    /// is the 2.1.1 [`Session2111`] shape.
+    pub fn sessions_2_1_1_router(config: Arc<Sessions2111Config>) -> Router {
+        Router::new()
+            .route("/sessions", get(sessions_2_1_1_list))
+            .route(
+                "/sessions/{country_code}/{party_id}/{session_id}",
+                get(sessions_2_1_1_get)
+                    .put(sessions_2_1_1_put)
+                    .patch(sessions_2_1_1_patch),
+            )
+            .with_state(config)
+    }
+
+    async fn sessions_2_1_1_list(
+        State(cfg): State<Arc<Sessions2111Config>>,
+        Query(params): Query<PaginatedParams>,
+    ) -> Response {
+        use ocpi_types::chrono::TimeZone as _;
+        let date_from = params.date_from.unwrap_or_else(|| {
+            ocpi_types::Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .single()
+                .expect("epoch is valid")
+        });
+        let offset = params.offset.unwrap_or(0);
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
+
+        let (items, total) = cfg.list(date_from, params.date_to, offset, limit);
+        let page = OcpiPaged::new(items, offset, limit, total);
+        let next_offset = page.next_offset();
+        let body = page.into_response();
+
+        let mut response = Json(body).into_response();
+        let hdrs = response.headers_mut();
+        if let Ok(v) = total.to_string().parse() {
+            hdrs.insert("x-total-count", v);
+        }
+        if let Ok(v) = limit.to_string().parse() {
+            hdrs.insert("x-limit", v);
+        }
+        if let Some(next_off) = next_offset {
+            let link = format!("</sessions?offset={next_off}&limit={limit}>; rel=\"next\"");
+            if let Ok(v) = link.parse() {
+                hdrs.insert("link", v);
+            }
+        }
+
+        response
+    }
+
+    async fn sessions_2_1_1_get(
+        State(cfg): State<Arc<Sessions2111Config>>,
+        Path((country_code, party_id, session_id)): Path<(String, String, String)>,
+    ) -> Response {
+        match cfg.get(&country_code, &party_id, &session_id) {
+            Some(session) => Json(OcpiResponse::success(session)).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<Session2111>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!("session {session_id} not found"),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn sessions_2_1_1_put(
+        State(cfg): State<Arc<Sessions2111Config>>,
+        Path((country_code, party_id, session_id)): Path<(String, String, String)>,
+        Json(session): Json<Session2111>,
+    ) -> Response {
+        cfg.put(&country_code, &party_id, &session_id, session);
+        Json(OcpiResponse::<Session2111>::success_empty()).into_response()
+    }
+
+    async fn sessions_2_1_1_patch(
+        State(cfg): State<Arc<Sessions2111Config>>,
+        Path((country_code, party_id, session_id)): Path<(String, String, String)>,
+        Json(partial): Json<ocpi_types::serde_json::Value>,
+    ) -> Response {
+        match cfg.patch_json(&country_code, &party_id, &session_id, partial) {
+            Ok(()) => Json(OcpiResponse::<Session2111>::success_empty()).into_response(),
+            Err(ServerError::NotFound) => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<Session2111>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!("session {session_id} not found"),
+                )),
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<Session2111>::error(
                     OcpiStatusCode::ServerError,
                     "internal error",
                 )),
