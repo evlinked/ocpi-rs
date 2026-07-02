@@ -5,6 +5,38 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-01 — rescue rotted #132 (Tariffs 2.1.1): re-deliver off current main
+
+- **Sync:** 2 open nightly PRs at the cap — **#134** (Sessions 2.1.1) and
+  **#132** (Tariffs 2.1.1) — plus dependabot #127. #134 is **green + `clean`**;
+  it's `needs-human` only because it's **850 additions > the 800 size cap**
+  (`pr-ready-gate.yml:34 SIZE_CAP="800"`), *not* a guarded path — so it's
+  healthy and just awaits the owner's merge, nothing to fix. **#132 was `dirty`
+  (conflicting):** based on stale `main` (`f077ace`, pre-#131) and carrying a
+  now-redundant Cargo.lock quinn-proto `0.11.14→0.11.15` bump that already
+  landed on `main` via #131. A dirty PR can't merge → **fixing it was the job**
+  (drain, don't open a 3rd feature PR).
+- **Action — re-deliver, don't merge-resolve** (per LEARNINGS): cherry-picked
+  #132's commit onto the designated branch off *current* `main` and **dropped
+  the Cargo.lock change entirely** (main already has 0.11.15, so the cherry-pick
+  auto-resolved it to a no-op). Resolved 3 additive-region conflicts by
+  keep-both: the `Tariff2111` import alias in both `lib.rs` files, and the
+  README matrix cell + M7 narrative (kept `main`'s up-to-date paragraph — which
+  correctly says the #115 fetch-back *landed* — and spliced in only the Tariffs
+  sentence; #132's stale copy wrongly said fetch-back was deferred and reset
+  CDRs ◑→☐).
+- **Result:** the re-delivered PR is **723 additions, 0 guarded paths, under
+  the 800 cap** → non-risky/trusted → auto-readyable. Strictly better than the
+  rotted #132 (which was blocked on both the dep-path label *and* the conflict).
+- **CI (local):** fmt ✅ · clippy `--all-features -D warnings` ✅ · test
+  `--all-features` ✅ (0 failures, incl. the 2 new Tariffs tests) · doc
+  `-D warnings` ✅. cargo-deny unaffected (no Cargo.toml/lock change).
+- **Closed #132** as superseded by the new PR.
+- **Next:** #134 (Sessions) is over the size cap → owner-merge; once it and the
+  Tariffs PR land, continue M7 with the CDRs half of #120 and #123 (Tokens) /
+  #124 (Commands) / #125 (Locations receiver). Split future module-wiring PRs to
+  stay **under 800 additions** so they auto-ready instead of tripping the cap.
+
 ## 2026-06-30 — M7 2.1.1 Sessions client+server wiring (issue #120, Sessions slice)
 
 - **Sync:** 1 open nightly PR (#132, Tariffs 2.1.1, `needs-human` — owner's to
