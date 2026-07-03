@@ -5,6 +5,42 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-02 — M7 CDRs 2.1.1 wiring (issue #120, CDRs slice)
+
+- **Sync:** 0 open PRs — queue fully drained since run 21. Nothing to rescue.
+- **Groom:** M7 (earliest incomplete milestone) has ≥3 owner-approved `nightly`
+  issues (#120 remaining CDRs, #123 Tokens, #124 Commands, #125 Locations
+  receiver) — no new issues needed. Closed **#126** (the run-21 drain runbook):
+  all five of its tracked PRs (#117/#119/#116/#121/#118) are on `main`, DoD met.
+- **Issue:** #120 — CDRs slice (Sessions slice landed in #134).
+- **Branch:** `claude/dazzling-maxwell-t5qygl` (session-designated).
+- **CI:** `fmt` ✅ `clippy -D warnings` ✅ `test` ✅ (new file green: 2 tests).
+  `cargo deny` not installable in the runner, but the diff adds **zero deps**
+  (only `use` aliases to already-vendored `v2_1_1` types) → deny is a no-op vs
+  `main`; CI's deny job confirms.
+- **What shipped (646 additions, no guarded paths → auto-readyable):**
+  - `ocpi-server`: `Cdrs2111Handler` trait + `Cdrs2111Config` store +
+    `http::cdrs_2_1_1_router` (`GET /cdrs`, `GET /cdrs/{id}`, `POST /cdrs`).
+  - `ocpi-client`: `OcpiClient::{get_cdrs,get_cdr,post_cdr}_2_1_1` — mirror of
+    the 2.2.1 CDR methods against `Cdr2111`.
+  - `crates/ocpi-client/tests/m7_cdrs_2_1_1.rs`: in-process axum round-trip
+    (POST→`Location`, GET single, paginated list, 404) + a wire-shape test.
+  - README: CDRs 2.1.1 cell ◑ → ☑; M7 narrative sentence.
+- **Spec fidelity:** A CDR is a **server-owned** object (receiver names it via
+  the `Location` header on `POST /cdrs`, §10.2.2), so 2.1.1 paths are **flat** —
+  identical to 2.2.1; only the `Cdr` object differs. This matches the LEARNINGS
+  note "Server-owned modules like CDRs `POST /cdrs` + `GET /cdrs/{id}` stay
+  flat" — contrast with the *client-owned* Sessions/Tariffs which keep the
+  `{country_code}/{party_id}` segments.
+- **What worked:** Mirroring the just-landed Sessions wiring (#134) made this a
+  low-risk, mechanical slice. Building the `Cdr` fixture via `from_value` on the
+  spec JSON (rather than a 40-line struct literal) kept the test compact.
+- **Next:** #123 (Tokens 2.1.1 wiring + real-time authorize) — the last "core
+  data" module pair before Commands (#124). Tokens adds the `authorize` POST,
+  which is new surface (not a pure mirror), so budget a bit more care.
+
+---
+
 ## 2026-07-01 — rescue rotted #132 (Tariffs 2.1.1): re-deliver off current main
 
 - **Sync:** 2 open nightly PRs at the cap — **#134** (Sessions 2.1.1) and
