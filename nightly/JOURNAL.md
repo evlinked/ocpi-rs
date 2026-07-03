@@ -5,50 +5,18 @@ result, what worked, what to try next.
 
 ---
 
-## 2026-07-03 — M7 Tokens 2.1.1 (issue #123, server slice)
+## 2026-07-03 — M7 Tokens 2.1.1 server slice (issue #123) — PR #137
 
-- **Sync:** 0 open PRs — queue fully drained (Sessions/Tariffs/CDRs 2.1.1 all
-  landed on `main` as #134/#135/#136). Nothing to rescue.
-- **Groom:** M7 (earliest incomplete milestone) has 3 owner-approved `nightly`
-  issues (#123 Tokens, #124 Commands, #125 Locations receiver) — meets the
-  ≥3 threshold, no new issues needed. Fri (not Sun) → normal groom only.
-- **Issue:** #123 — Tokens 2.1.1 client+server+authorize. Scoped to the
-  **server** slice (types + `Tokens2111Handler`/`Config`/`tokens_2_1_1_router`
-  incl. the authorize endpoint); client sender + integration test deferred.
-- **Branch:** `claude/dazzling-maxwell-p6fown` (session-designated).
-- **CI (local):** fmt ✅ · clippy `--all-targets --all-features -D warnings` ✅ ·
-  test `--all-features` ✅ (all suites, +5 new inline `Tokens2111Config` tests +
-  2 new type tests) · doc `-D warnings` ✅. `cargo deny` not installable in the
-  runner, but the diff adds **zero deps** → deny is a no-op; CI confirms.
-- **What shipped (770 additions, 0 guarded paths → auto-readyable):**
-  - Types (`v2_1_1::tokens`): `LocationReferences` (2.1.1 keeps `connector_ids`,
-    removed in 2.2.1) + `AuthorizationInfo` (`allowed` + optional `location`/
-    `info`; **no** `token`, **no** `authorization_reference`). `AllowedType` and
-    `DisplayText` reused (byte-identical across versions).
-  - Server: `Tokens2111Handler` trait + `Tokens2111Config` store +
-    `http::tokens_2_1_1_router` (receiver GET/PUT/PATCH on
-    `/tokens/{cc}/{party}/{token_uid}?type=` + sender `POST
-    /tokens/{token_uid}/authorize?type=`).
-  - README: M7 narrative (server side landed); matrix cell stays ◑.
-- **Spec-fidelity catch (recurring trap, same class as Sessions/Tariffs):** the
-  issue text said the 2.1.1 Tokens receiver is a **flat** path keyed by
-  `auth_id`. The vendored `OCPI_2.1.1.pdf` §12.2.2 says otherwise — the CPO
-  receiver endpoint is `/tokens/{country_code}/{party_id}/{token_uid}` (Token is
-  a client-owned object) and is keyed by the Token `uid` with a `?type=` query,
-  **identical transport to 2.2.1**. Verified verbatim via the stdlib zlib+regex
-  PDF extractor (LEARNINGS). Implemented to spec.
-- **Why split (server-first):** the full module's *production code alone* is
-  ~844 additions (client 210 + server 523 + types 111) — over the 800-addition
-  size cap *before any tests*. So a sender/receiver split is mandatory here
-  (unlike the smaller CDRs/Tariffs modules that fit client+server+test under
-  800). Chose server-first because the store logic is unit-testable inline now,
-  and the follow-up client PR can then drive a full in-process round-trip
-  against the landed router. Kept authorize in this slice (it's the point of
-  #123) rather than deferring it.
-- **Next:** the **client** slice of #123 — `OcpiClient::{get_tokens,put_token,
-  patch_token,authorize_token}_2_1_1` + a `m7_tokens_2_1_1.rs` in-process
-  round-trip test; flip the README Tokens 2.1.1 cell ◑ → ☑. Then #124 (Commands,
-  the async two-phase result callback) and #125 (Locations receiver).
+- **Sync:** 0 open PRs (drained; #134/#135/#136 landed). **Groom:** M7 has 3
+  `nightly` issues (#123/#124/#125) — no new issues needed.
+- **Issue #123** scoped to the **server** slice: types + `Tokens2111Handler`/
+  `Config`/`tokens_2_1_1_router` (incl. `authorize`); client sender deferred.
+- **CI (local):** fmt ✅ · clippy `--all-features -D warnings` ✅ · test
+  `--all-features` ✅ (+7 tests) · doc ✅. Zero deps → `cargo deny` a no-op.
+- **Spec catch (recurring trap):** issue said flat `auth_id` receiver path; PDF
+  §12.2.2 says `/tokens/{cc}/{party}/{token_uid}?type=` keyed by `uid` — same
+  transport as 2.2.1. Split server-first (prod code ~844 > 800 cap). See LEARNINGS.
+- **Next:** client slice of #123 (`get/put/patch/authorize_token_2_1_1` + round-trip test; README ◑→☑), then #124, #125.
 
 ---
 

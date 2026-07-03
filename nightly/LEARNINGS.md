@@ -73,26 +73,19 @@ cycle. Keep entries short and specific. Prune contradictions.
   oneshot tests and keep sync `Config` tests so `Cargo.toml` stays untouched → auto-mergeable.
   HTTP-level coverage belongs in the dedicated e2e smoke-test issue (#23/#32), which introduces
   the harness dev-deps in its own PR.
-- **A 2.1.1 module whose *production code alone* exceeds ~800 additions MUST be
-  split sender/receiver — Tokens is the first one.** CDRs/Tariffs/Sessions each
-  fit client+server+integration-test under the 800-addition cap (646/723/850).
-  Tokens does not: the full wiring is ~844 additions of prod code *before any
-  tests* (client ~210 + server ~523 + types ~111), because it adds the real-time
-  `authorize` endpoint on both sides plus two extra types (`AuthorizationInfo`,
-  `LocationReferences`). Ship **server-first** (types + `*2111Handler`/`*Config`/
-  `*_2_1_1_router` incl. authorize + inline `*Config` unit tests, ~770 add,
-  auto-readyable), then the **client** sender + an in-process round-trip test as
-  the follow-up (it can drive the now-landed router). Keep the README matrix cell
-  ◑ until the client half lands, then flip to ☑. Don't defer `authorize` to make
-  it fit — it's the valuable surface; split the axis (sender/receiver) instead.
-- **2.1.1 Tokens transport = 2.2.1 transport (spec-verified §12.2.2).** Receiver
-  (CPO) path is `/tokens/{country_code}/{party_id}/{token_uid}?type=` (Token is a
-  client-owned object), GET/PUT/PATCH only (no DELETE/POST), keyed by the Token
-  `uid` **not** `auth_id`. Sender (eMSP): `GET /tokens` (paginated) +
-  `POST /tokens/{token_uid}/authorize?type=`. 2.1.1 `LocationReferences` keeps a
-  third field `connector_ids` (dropped in 2.2.1); 2.1.1 `AuthorizationInfo` omits
-  `token` and `authorization_reference` (both 2.2 additions). The grooming issue
-  text claiming a "flat path, `auth_id` keying" is the recurring trap — spec wins.
+- **The 800 size cap counts the WHOLE PR (incl. `nightly/*.md`), and a 2.1.1
+  module whose prod code alone tops ~800 must split sender/receiver.** Tokens is
+  the first: ~844 prod-only additions (adds the `authorize` endpoint +
+  `AuthorizationInfo`/`LocationReferences` types) vs CDRs/Tariffs/Sessions that
+  fit client+server+test under 800. Ship **server-first** (types + handler/config/
+  router incl. authorize + inline `*Config` tests), client sender + round-trip
+  test as follow-up. Don't defer `authorize` to fit — split the axis. And keep
+  the journal/learnings edits terse (≤~30 add) so the split slice stays ≤800.
+- **2.1.1 Tokens transport = 2.2.1 (spec §12.2.2).** Receiver
+  `/tokens/{cc}/{party}/{token_uid}?type=` (client-owned), GET/PUT/PATCH, keyed by
+  Token `uid` **not** `auth_id`; sender `GET /tokens` + `POST .../authorize`. 2.1.1
+  `LocationReferences` keeps `connector_ids`; `AuthorizationInfo` omits `token`/
+  `authorization_reference`. Issue's "flat/`auth_id`" is the recurring trap.
 - **Before re-delivering old type work, grep `main` for the types first.** M4/M5/M6 added
   `TokenType`, `ConnectorType`, `ConnectorFormat`, `PowerType` to `v2_2_1.rs` ahead of the
   Locations module (Sessions/CDRs/Tokens referenced them). Re-applying an older Locations
