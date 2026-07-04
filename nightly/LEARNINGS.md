@@ -6,6 +6,26 @@ cycle. Keep entries short and specific. Prune contradictions.
 
 ## Workflow & PR hygiene
 
+- **`git log origin/main` is the ONLY ground truth — the git proxy AND the GitHub
+  MCP API both lag at session start.** Run 2026-07-04(B) burned a whole night on
+  redundant work: the first `git fetch origin main` returned `4f2a916` and MCP
+  `list_pull_requests` showed #119/#121/#131/#132 *open* — but `main` was actually
+  9 commits ahead (`856042d`) with all of them already merged (incl. the exact
+  fetch-back I then re-delivered as the redundant #139). Both data sources caught
+  up only mid-run. **Mandatory Sync ritual, in order, before any triage decision:**
+  (1) `git fetch origin main` **twice** (or `git fetch --all`) and take the *newer*
+  head; (2) for every PR the API calls "open", verify with
+  `git merge-base --is-ancestor <pr_head_sha> origin/main` — if true it's already
+  merged/included, ignore the API's "open"; (3) before re-delivering or "rescuing"
+  any PR, `git grep`/`git ls-tree origin/main` for its key new symbol/file — if
+  it's already on `main`, the PR is done. Never open a PR whose delta already
+  exists on `main`.
+- **A PR that shows `dirty` because "its feature is already merged" is NOT a rescue
+  target — it's a close target.** Distinguish the two dirty cases with an ancestry
+  check: if `main` already contains the PR's symbols (grep), close it as
+  merged/superseded; only re-deliver when the feature is genuinely absent from
+  `main`.
+
 - **No auto-merge — the owner merges every PR.** The gate is `pr-ready-gate.yml`
   (formerly `auto-merge-gate.yml`). For a trusted, non-risky PR it auto-marks the
   PR **ready for review** (`gh pr ready`) and labels it `ready-for-review`; it no
