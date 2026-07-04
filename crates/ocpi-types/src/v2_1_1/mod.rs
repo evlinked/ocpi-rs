@@ -35,6 +35,7 @@
 //! [`Endpoint`] with one of the 2.2-only identifiers is possible at the type
 //! level but out of spec — see [`Endpoint::is_valid_2_1_1`].
 
+mod cdrs;
 mod commands;
 mod credentials;
 mod locations;
@@ -43,6 +44,7 @@ mod tariffs;
 mod tokens;
 mod versions;
 
+pub use cdrs::Cdr;
 pub use commands::{
     CommandResponse, CommandResponseType, CommandType, ReserveNow, StartSession, StopSession,
     UnlockConnector,
@@ -57,5 +59,5 @@ pub use sessions::{
     AuthMethod, CdrDimension, CdrDimensionType, ChargingPeriod, Session, SessionStatus,
 };
 pub use tariffs::{PriceComponent, Tariff, TariffDimensionType, TariffElement, TariffRestrictions};
-pub use tokens::{Token, TokenType};
+pub use tokens::{AuthorizationInfo, LocationReferences, Token, TokenType};
 pub use versions::{Endpoint, VersionDetails};

@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::common::{CiString36, CiString64};
+use crate::common::{CiString36, CiString64, DisplayText};
 
 // ── TokenType ─────────────────────────────────────────────────────────────────
 
@@ -71,10 +71,72 @@ pub struct Token {
     pub last_updated: DateTime<Utc>,
 }
 
+// ── LocationReferences ────────────────────────────────────────────────────────
+
+/// References a location and, optionally, specific EVSEs/connectors within it.
+///
+/// Sent as the body of a real-time authorize request and echoed (filtered to the
+/// allowed subset) in the [`AuthorizationInfo`] response.
+///
+/// ## Delta from 2.2.1
+///
+/// OCPI **2.1.1** carries a third field, **`connector_ids`**, which was removed
+/// in 2.2.1 (where a `LocationReferences` narrows to `location_id` + `evse_uids`
+/// only). A 2.1.1 peer may therefore scope authorization down to individual
+/// connectors, so the field is modelled here.
+///
+/// Spec: OCPI 2.1.1 — *Tokens* module, *LocationReferences* class
+/// (`specs/ocpi/2.1.1/OCPI_2.1.1.pdf`, §12.4.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocationReferences {
+    /// Unique identifier for the location (`Location.id`).
+    pub location_id: CiString36,
+    /// Unique identifiers of the EVSEs within the location (`Evse.uid`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evse_uids: Vec<CiString36>,
+    /// Identifiers of the connectors within the given EVSEs (`Connector.id`).
+    ///
+    /// Removed in 2.2.1; kept here for 2.1.1 fidelity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connector_ids: Vec<CiString36>,
+}
+
+// ── AuthorizationInfo ─────────────────────────────────────────────────────────
+
+/// Response to a real-time authorization request
+/// (`POST /tokens/{token_uid}/authorize`).
+///
+/// ## Deltas from the 2.2.1 [`crate::v2_2_1::AuthorizationInfo`]
+///
+/// - **No `token`** field — 2.1.1 does not echo the full [`Token`] in the
+///   response (added in 2.2).
+/// - **No `authorization_reference`** — that identifier arrived in 2.2.
+/// - `location` is the 2.1.1 [`LocationReferences`] (carries `connector_ids`).
+///
+/// The `allowed` enum ([`crate::v2_2_1::AllowedType`]:
+/// `ALLOWED` / `BLOCKED` / `EXPIRED` / `NO_CREDIT` / `NOT_ALLOWED`) is
+/// byte-identical across 2.1.1 and 2.2.1, so it is shared rather than duplicated.
+///
+/// Spec: OCPI 2.1.1 — *Tokens* module, *AuthorizationInfo* object
+/// (`specs/ocpi/2.1.1/OCPI_2.1.1.pdf`, §12.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizationInfo {
+    /// Status of the token, and whether charging is allowed at the optionally
+    /// given location.
+    pub allowed: crate::v2_2_1::AllowedType,
+    /// Optional reference to the location supplied in the request, filtered to
+    /// the EVSEs/connectors the driver is allowed to charge at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<LocationReferences>,
+    /// Optional display text with additional information for the EV driver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info: Option<DisplayText>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v2_2_1::WhitelistType;
+    use crate::v2_2_1::{AllowedType, WhitelistType};
 
     #[test]
     fn token_type_serde_roundtrip() {
@@ -150,6 +212,49 @@ mod tests {
             assert!(
                 !json.contains(absent),
                 "2.1.1 Token must not carry `{absent}`: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn location_references_keeps_connector_ids() {
+        // 2.1.1 LocationReferences carries connector_ids (dropped in 2.2.1).
+        let json = r#"{
+            "location_id": "LOC1",
+            "evse_uids": ["3256"],
+            "connector_ids": ["1", "2"]
+        }"#;
+        let lr: LocationReferences = serde_json::from_str(json).unwrap();
+        assert_eq!(lr.location_id.as_str(), "LOC1");
+        assert_eq!(lr.evse_uids.len(), 1);
+        assert_eq!(lr.connector_ids.len(), 2);
+
+        // Empty vecs are omitted on the wire.
+        let bare = LocationReferences {
+            location_id: CiString36::try_from("LOC1").unwrap(),
+            evse_uids: vec![],
+            connector_ids: vec![],
+        };
+        let wire = serde_json::to_string(&bare).unwrap();
+        assert_eq!(wire, r#"{"location_id":"LOC1"}"#);
+    }
+
+    #[test]
+    fn authorization_info_omits_2_2_1_fields() {
+        // Ported from the 2.1.1 spec AuthorizationInfo example: allowed + no
+        // token / authorization_reference (both 2.2 additions).
+        let json = r#"{ "allowed": "ALLOWED" }"#;
+        let info: AuthorizationInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.allowed, AllowedType::Allowed);
+        assert!(info.location.is_none());
+        assert!(info.info.is_none());
+
+        let wire = serde_json::to_string(&info).unwrap();
+        assert_eq!(wire, r#"{"allowed":"ALLOWED"}"#);
+        for absent in ["token", "authorization_reference"] {
+            assert!(
+                !wire.contains(absent),
+                "2.1.1 AuthorizationInfo must not carry `{absent}`: {wire}"
             );
         }
     }

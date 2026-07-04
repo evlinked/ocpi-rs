@@ -5,45 +5,155 @@ result, what worked, what to try next.
 
 ---
 
-## 2026-06-29 — drain night: rescue dirty #121 (2.1.1 Credentials fetch-back), prune superseded CI PR
+## 2026-07-04 — M7 Tokens 2.1.1 client slice (issue #123) — completes module
 
-- **Triage (Sync was the job).** Open nightly PRs were over the cap of 2: #119
-  (CDRs types, `clean` draft), #121 (Credentials fetch-back, `dirty` +
-  `needs-human`), #132 (Tariffs wiring, `dirty` draft) — plus #131 (audit
-  lockfile bump, draft). No new feature work; drain instead.
-- **Key finding — main is already green.** `origin/main` (`4f2a916`) ships
-  `quinn-proto 0.11.15`; the RUSTSEC-2026-0185 bump landed bundled in #118.
-  → **PR #131 and issue #130 are superseded** (their lockfile fix is already on
-  main). Closed both.
-- **Why #121 was `dirty` + `needs-human`.** It was stacked on #116 (now squash-
-  merged), so it re-conflicts on the two keep-both anchors (README M7 paragraph
-  + `ocpi-client` 2.1.1 alias-import block). It also carried the redundant
-  `Cargo.lock` quinn bump — a **guarded path**, which is what pinned the
-  `needs-human` label.
-- **Rescue = re-deliver off current main (per LEARNINGS).** Merged the #121
-  branch into this run's branch, resolved the two keep-both conflicts (kept HEAD's
-  Locations sentence + #121's fetch-back sentence; kept both alias-import lines),
-  and the redundant `Cargo.lock` bump auto-dropped (main already has 0.11.15).
-  Net diff = the fetch-back delta only (README +4/-2, client lib.rs +70, server
-  lib.rs +339, +183-line loopback test). **No guarded paths → auto-mergeable**
-  (sheds `needs-human`).
-- **CI (local):** `fmt` ✅ · `clippy --workspace --all-targets --all-features -D
-  warnings` ✅ (0 warnings) · `test --workspace --all-features` ✅ — 0 failures
-  (ocpi-types 231, ocpi-server 103 incl. 4 new fetch-back unit tests, + 2 new
-  client↔server loopback tests). `cargo-deny` not installed locally (trust CI).
-- **Also drained:** marked #119 (clean) ready for review; left #132 a keep-both
-  resolution note (same two-file conflict — rescue next, identical recipe).
-- **What worked:** `git merge-tree --write-tree origin/main <branch>` up front to
-  classify the queue as clean vs dirty *before* touching anything — pointed
-  straight at the two real conflicts. Re-delivering a `dirty` stacked PR off
-  current main (not merge-resolving on its own branch) drops the stale guarded-
-  path bump and clears `needs-human` for free.
-- **Next:** rescue #132 (2.1.1 Tariffs wiring) the same way — re-deliver off main,
-  resolve the identical README + `ocpi-client` alias-block keep-both, drop its
-  redundant Cargo.lock bump. Then #120 (Sessions+CDRs wiring) once the type PRs
-  (#117 ✅ / #119) land.
+- **Sync:** 0 open PRs. **Groom:** M7 has 3 `nightly` issues (#123/#124/#125) —
+  no new issues needed. Sat run (not Sunday) → no hard groom.
+- **Issue #123** client slice, the follow-up to last night's server slice (#137):
+  `OcpiClient::{get_tokens,put_token,patch_token,authorize_token}_2_1_1` against
+  `v2_1_1` token types, plus a `token_type_2_1_1_str` helper (2.1.1 has only
+  `OTHER`/`RFID`). Mirrors the 2.2.1 tokens client; paths identical (§12.2.2 keeps
+  `{cc}/{party}/{uid}` — client-owned object). Flips README Tokens 2.1.1 ◑ → ☑.
+- **Test:** `m7_tokens_2_1_1.rs` — in-process axum `tokens_2_1_1_router` round-trip:
+  paginated list (2-of-3 + next-page), PUT→store round-trip, authorize ALLOWED
+  (echoes 2.1.1-only `connector_ids`), PATCH invalid→BLOCKED clears location, plus
+  authorize/patch 404→`NotFound`. +2 tests.
+- **CI (local):** fmt ✅ · clippy `--all-features -D warnings` ✅ · test
+  `--all-features` ✅ (all green, +2) · `cargo deny` not installed in runner but
+  zero deps / no `Cargo.toml` touched → no-op (CI runs it). 460 additions, no
+  guarded paths → auto-mergeable.
+- **What worked:** reusing `join_segments` (the 2.1.1 sessions/tariffs idiom) instead
+  of copying 2.2.1's inline `format!`; verifying PUT via the shared `store.get()`
+  since 2.1.1 (like 2.2.1) has no single-token client getter.
+- **Next:** #124 (2.1.1 Commands client+server — no `CANCEL_RESERVATION`, full-`Token`
+  `StartSession`) or #125 (2.1.1 Locations *receiver* router). #124 is the larger,
+  higher-value slice; may need a sender/receiver split like Tokens did.
+
+## 2026-07-03 — M7 Tokens 2.1.1 server slice (issue #123) — PR #137
+
+- **Sync:** 0 open PRs (drained; #134/#135/#136 landed). **Groom:** M7 has 3
+  `nightly` issues (#123/#124/#125) — no new issues needed.
+- **Issue #123** scoped to the **server** slice: types + `Tokens2111Handler`/
+  `Config`/`tokens_2_1_1_router` (incl. `authorize`); client sender deferred.
+- **CI (local):** fmt ✅ · clippy `--all-features -D warnings` ✅ · test
+  `--all-features` ✅ (+7 tests) · doc ✅. Zero deps → `cargo deny` a no-op.
+- **Spec catch (recurring trap):** issue said flat `auth_id` receiver path; PDF
+  §12.2.2 says `/tokens/{cc}/{party}/{token_uid}?type=` keyed by `uid` — same
+  transport as 2.2.1. Split server-first (prod code ~844 > 800 cap). See LEARNINGS.
+- **Next:** client slice of #123 (`get/put/patch/authorize_token_2_1_1` + round-trip test; README ◑→☑), then #124, #125.
 
 ---
+
+## 2026-07-02 — M7 CDRs 2.1.1 wiring (issue #120, CDRs slice)
+
+- **Sync:** 0 open PRs — queue fully drained since run 21. Nothing to rescue.
+- **Groom:** M7 (earliest incomplete milestone) has ≥3 owner-approved `nightly`
+  issues (#120 remaining CDRs, #123 Tokens, #124 Commands, #125 Locations
+  receiver) — no new issues needed. Closed **#126** (the run-21 drain runbook):
+  all five of its tracked PRs (#117/#119/#116/#121/#118) are on `main`, DoD met.
+- **Issue:** #120 — CDRs slice (Sessions slice landed in #134).
+- **Branch:** `claude/dazzling-maxwell-t5qygl` (session-designated).
+- **CI:** `fmt` ✅ `clippy -D warnings` ✅ `test` ✅ (new file green: 2 tests).
+  `cargo deny` not installable in the runner, but the diff adds **zero deps**
+  (only `use` aliases to already-vendored `v2_1_1` types) → deny is a no-op vs
+  `main`; CI's deny job confirms.
+- **What shipped (646 additions, no guarded paths → auto-readyable):**
+  - `ocpi-server`: `Cdrs2111Handler` trait + `Cdrs2111Config` store +
+    `http::cdrs_2_1_1_router` (`GET /cdrs`, `GET /cdrs/{id}`, `POST /cdrs`).
+  - `ocpi-client`: `OcpiClient::{get_cdrs,get_cdr,post_cdr}_2_1_1` — mirror of
+    the 2.2.1 CDR methods against `Cdr2111`.
+  - `crates/ocpi-client/tests/m7_cdrs_2_1_1.rs`: in-process axum round-trip
+    (POST→`Location`, GET single, paginated list, 404) + a wire-shape test.
+  - README: CDRs 2.1.1 cell ◑ → ☑; M7 narrative sentence.
+- **Spec fidelity:** A CDR is a **server-owned** object (receiver names it via
+  the `Location` header on `POST /cdrs`, §10.2.2), so 2.1.1 paths are **flat** —
+  identical to 2.2.1; only the `Cdr` object differs. This matches the LEARNINGS
+  note "Server-owned modules like CDRs `POST /cdrs` + `GET /cdrs/{id}` stay
+  flat" — contrast with the *client-owned* Sessions/Tariffs which keep the
+  `{country_code}/{party_id}` segments.
+- **What worked:** Mirroring the just-landed Sessions wiring (#134) made this a
+  low-risk, mechanical slice. Building the `Cdr` fixture via `from_value` on the
+  spec JSON (rather than a 40-line struct literal) kept the test compact.
+- **Next:** #123 (Tokens 2.1.1 wiring + real-time authorize) — the last "core
+  data" module pair before Commands (#124). Tokens adds the `authorize` POST,
+  which is new surface (not a pure mirror), so budget a bit more care.
+
+---
+
+## 2026-07-01 — rescue rotted #132 (Tariffs 2.1.1): re-deliver off current main
+
+- **Sync:** 2 open nightly PRs at the cap — **#134** (Sessions 2.1.1) and
+  **#132** (Tariffs 2.1.1) — plus dependabot #127. #134 is **green + `clean`**;
+  it's `needs-human` only because it's **850 additions > the 800 size cap**
+  (`pr-ready-gate.yml:34 SIZE_CAP="800"`), *not* a guarded path — so it's
+  healthy and just awaits the owner's merge, nothing to fix. **#132 was `dirty`
+  (conflicting):** based on stale `main` (`f077ace`, pre-#131) and carrying a
+  now-redundant Cargo.lock quinn-proto `0.11.14→0.11.15` bump that already
+  landed on `main` via #131. A dirty PR can't merge → **fixing it was the job**
+  (drain, don't open a 3rd feature PR).
+- **Action — re-deliver, don't merge-resolve** (per LEARNINGS): cherry-picked
+  #132's commit onto the designated branch off *current* `main` and **dropped
+  the Cargo.lock change entirely** (main already has 0.11.15, so the cherry-pick
+  auto-resolved it to a no-op). Resolved 3 additive-region conflicts by
+  keep-both: the `Tariff2111` import alias in both `lib.rs` files, and the
+  README matrix cell + M7 narrative (kept `main`'s up-to-date paragraph — which
+  correctly says the #115 fetch-back *landed* — and spliced in only the Tariffs
+  sentence; #132's stale copy wrongly said fetch-back was deferred and reset
+  CDRs ◑→☐).
+- **Result:** the re-delivered PR is **723 additions, 0 guarded paths, under
+  the 800 cap** → non-risky/trusted → auto-readyable. Strictly better than the
+  rotted #132 (which was blocked on both the dep-path label *and* the conflict).
+- **CI (local):** fmt ✅ · clippy `--all-features -D warnings` ✅ · test
+  `--all-features` ✅ (0 failures, incl. the 2 new Tariffs tests) · doc
+  `-D warnings` ✅. cargo-deny unaffected (no Cargo.toml/lock change).
+- **Closed #132** as superseded by the new PR.
+- **Next:** #134 (Sessions) is over the size cap → owner-merge; once it and the
+  Tariffs PR land, continue M7 with the CDRs half of #120 and #123 (Tokens) /
+  #124 (Commands) / #125 (Locations receiver). Split future module-wiring PRs to
+  stay **under 800 additions** so they auto-ready instead of tripping the cap.
+
+## 2026-06-30 — M7 2.1.1 Sessions client+server wiring (issue #120, Sessions slice)
+
+- **Sync:** 1 open nightly PR (#132, Tariffs 2.1.1, `needs-human` — owner's to
+  merge, not my branch; left untouched) + 1 dependabot PR (#127). Under the
+  2-PR cap, so took a fresh feature issue. #126 (run-21 runbook, P1) is a
+  meta/queue-drain issue whose DoD is met (PRs #116/#117/#118/#119/#121 all
+  merged) — flagged to close in the report.
+- **Issue:** #120 — 2.1.1 Sessions + CDRs wiring. Scoped to the **Sessions**
+  client+server slice (issue itself flags >500 LOC; CDRs deferred to a split
+  follow-up).
+- **Branch:** `claude/dazzling-maxwell-g84gi7` (harness-designated push branch;
+  overrides the playbook's `nightly/*` naming for this session).
+- **CI (local):** fmt ✅ clippy `-D warnings` ✅ test `--all-features` ✅ (all
+  suites, +2 new) doc `-D warnings` ✅. `cargo deny` not installed locally but
+  **no Cargo.toml/lock change** → deny unaffected, no `needs-human`.
+- **What shipped (~548 prod LOC + 241 test):**
+  - Server: `Sessions2111Handler` trait + `Sessions2111Config` in-memory store
+    + `http::sessions_2_1_1_router` (Sender `GET /sessions`; Receiver
+    GET/PUT/PATCH on `/sessions/{country_code}/{party_id}/{session_id}`).
+  - Client: `get_sessions_2_1_1` (paginated sender list) + `get/put/patch
+    _session_2_1_1` (receiver getters/setters), over `v2_1_1::Session`.
+  - Test `m7_sessions_2_1_1.rs`: in-process axum loopback driven through
+    `OcpiClient` (list pagination + GET/PUT/PATCH + 2×404) + a wire-shape
+    assertion that no 2.2+ field leaks.
+  - README: Sessions 2.1.1 ◑ → ☑ + M7 narrative sentence.
+- **Spec-fidelity catch (same class as #132):** issue text said the 2.1.1
+  receiver path is **flat** `/sessions/{session_id}`. The vendored PDF (§9.2.2)
+  says otherwise — *"Sessions is a client owned object, so the end-points need
+  to contain the required extra fields: {party_id} and {country_code}"* →
+  `/sessions/{country_code}/{party_id}/{session_id}`. The `{cc}/{party}` URL
+  segments existed in 2.1.1/2.0 for client-owned objects; **2.2 added the
+  `OCPI-to/from-*` routing _headers_, not the path segments.** Implemented to
+  the spec. No `charging_preferences` route (2.2+).
+- **PDF tooling note:** the 2.1.1 spec is a PDF (no asciidoc); `pdftotext`,
+  `pypdf`, `poppler` all unavailable/broken in the runner. Extracted text with
+  a stdlib `zlib`+regex script (saved approach in LEARNINGS) — that's how the
+  §9.2.2 path was verified verbatim.
+- **Next:** the CDRs half of #120 (split follow-up — `get_cdrs_2_1_1` +
+  `post_cdr_2_1_1` + `Cdrs2111` receiver router; CDR receiver is `POST /cdrs` +
+  `GET /cdrs/{id}` per §10.2.2, the 2.1.1 CDR has `auth_id`/embedded location/
+  single `total_cost`). Then #123 (Tokens) / #124 (Commands) / #125 (Locations
+  receiver). Close #126 once #132 + this land.
 
 ## 2026-06-21 (run 19) — unblock the M7 type queue: resolve conflicts + complete #99 server-advertise
 
