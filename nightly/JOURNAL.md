@@ -5,6 +5,46 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-06-29 — drain night: rescue dirty #121 (2.1.1 Credentials fetch-back), prune superseded CI PR
+
+- **Triage (Sync was the job).** Open nightly PRs were over the cap of 2: #119
+  (CDRs types, `clean` draft), #121 (Credentials fetch-back, `dirty` +
+  `needs-human`), #132 (Tariffs wiring, `dirty` draft) — plus #131 (audit
+  lockfile bump, draft). No new feature work; drain instead.
+- **Key finding — main is already green.** `origin/main` (`4f2a916`) ships
+  `quinn-proto 0.11.15`; the RUSTSEC-2026-0185 bump landed bundled in #118.
+  → **PR #131 and issue #130 are superseded** (their lockfile fix is already on
+  main). Closed both.
+- **Why #121 was `dirty` + `needs-human`.** It was stacked on #116 (now squash-
+  merged), so it re-conflicts on the two keep-both anchors (README M7 paragraph
+  + `ocpi-client` 2.1.1 alias-import block). It also carried the redundant
+  `Cargo.lock` quinn bump — a **guarded path**, which is what pinned the
+  `needs-human` label.
+- **Rescue = re-deliver off current main (per LEARNINGS).** Merged the #121
+  branch into this run's branch, resolved the two keep-both conflicts (kept HEAD's
+  Locations sentence + #121's fetch-back sentence; kept both alias-import lines),
+  and the redundant `Cargo.lock` bump auto-dropped (main already has 0.11.15).
+  Net diff = the fetch-back delta only (README +4/-2, client lib.rs +70, server
+  lib.rs +339, +183-line loopback test). **No guarded paths → auto-mergeable**
+  (sheds `needs-human`).
+- **CI (local):** `fmt` ✅ · `clippy --workspace --all-targets --all-features -D
+  warnings` ✅ (0 warnings) · `test --workspace --all-features` ✅ — 0 failures
+  (ocpi-types 231, ocpi-server 103 incl. 4 new fetch-back unit tests, + 2 new
+  client↔server loopback tests). `cargo-deny` not installed locally (trust CI).
+- **Also drained:** marked #119 (clean) ready for review; left #132 a keep-both
+  resolution note (same two-file conflict — rescue next, identical recipe).
+- **What worked:** `git merge-tree --write-tree origin/main <branch>` up front to
+  classify the queue as clean vs dirty *before* touching anything — pointed
+  straight at the two real conflicts. Re-delivering a `dirty` stacked PR off
+  current main (not merge-resolving on its own branch) drops the stale guarded-
+  path bump and clears `needs-human` for free.
+- **Next:** rescue #132 (2.1.1 Tariffs wiring) the same way — re-deliver off main,
+  resolve the identical README + `ocpi-client` alias-block keep-both, drop its
+  redundant Cargo.lock bump. Then #120 (Sessions+CDRs wiring) once the type PRs
+  (#117 ✅ / #119) land.
+
+---
+
 ## 2026-06-21 (run 19) — unblock the M7 type queue: resolve conflicts + complete #99 server-advertise
 
 - **Triage:** Sync found 2 open nightly PRs (#97 Tokens, #98 Tariffs), **both

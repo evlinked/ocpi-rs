@@ -29,6 +29,9 @@ use ocpi_types::v2_1_1::VersionDetails as LegacyVersionDetails;
 // The flat OCPI 2.1.1 credentials object (no `roles` array), aliased to keep it
 // distinct from the role-bearing 2.2.1 `Credentials` imported above.
 use ocpi_types::v2_1_1::Credentials as Credentials2111;
+// The role-less OCPI 2.1.1 version-details endpoint (no `role` field), aliased
+// to keep it distinct from the role-bearing 2.2.1 `Endpoint` imported above.
+use ocpi_types::v2_1_1::Endpoint as Endpoint2111;
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -314,6 +317,36 @@ pub trait VersionFetcher: Send + Sync {
     ) -> FetchFuture<'a, VersionDetails>;
 }
 
+/// Fetches a remote party's **role-less OCPI 2.1.1** version catalogue during
+/// the registration handshake — the 2.1.1 counterpart to [`VersionFetcher`].
+///
+/// A faithful 2.1.1 partner emits version details whose endpoints carry **no
+/// `role`** ([`ocpi_types::v2_1_1::Endpoint`]). Reusing [`VersionFetcher`],
+/// whose `fetch_version_details` returns the role-bearing
+/// [`ocpi_types::version::VersionDetails`], would fail to deserialize such a
+/// response. The `/versions` list itself is identical across versions (a
+/// role-less list of [`Version`]), so only `fetch_version_details` diverges.
+///
+/// Like [`VersionFetcher`], the implementation lives in `ocpi-client` (the
+/// `ocpi-server` crate must not depend on an HTTP client); pass it to
+/// [`Credentials2111Config::new_with_fetcher`].
+///
+/// Spec: OCPI 2.1.1 — *Credentials* / *Registration* (the receiver fetches the
+/// sender's `/versions` + version details after a `POST`/`PUT /credentials`).
+pub trait LegacyVersionFetcher: Send + Sync {
+    /// `GET {url}` — retrieve the remote party's `/versions` list, presenting
+    /// `token` as the OCPI `Authorization` credential.
+    fn fetch_versions<'a>(&'a self, url: &'a str, token: &'a str) -> FetchFuture<'a, Vec<Version>>;
+
+    /// `GET {url}` — retrieve the **role-less** endpoint catalogue for a single
+    /// version.
+    fn fetch_version_details<'a>(
+        &'a self,
+        url: &'a str,
+        token: &'a str,
+    ) -> FetchFuture<'a, LegacyVersionDetails>;
+}
+
 /// Pick the entry with the highest [`VersionNumber`] that also appears in
 /// `supported`, or `None` if there is no overlap. Mirrors the sender-side
 /// negotiation in `ocpi-client`.
@@ -595,17 +628,36 @@ impl CredentialsConfig {
 /// in `Arc` to share across axum handlers (see [`http::credentials_2_1_1_router`]).
 ///
 /// The 2.1.1 registration *fetch-back* — `GET`-ing the registering party's
-/// `/versions` for its endpoint catalogue — is **not** wired here: a 2.1.1
-/// party advertises role-less version details, which the role-bearing
-/// [`VersionFetcher`] cannot model. This store therefore registers parties
-/// without an endpoint catalogue (the same path [`CredentialsConfig`] takes
-/// when no fetcher is configured). The role-less fetch-back is tracked as a
-/// follow-up.
+/// `/versions` for its endpoint catalogue — is wired through the role-less
+/// [`LegacyVersionFetcher`] (a 2.1.1 party advertises role-less version
+/// details, which the role-bearing [`VersionFetcher`] cannot model). Build the
+/// store with [`new_with_fetcher`](Self::new_with_fetcher) to enable it; plain
+/// [`new`](Self::new) registers parties without an endpoint catalogue (the same
+/// path [`CredentialsConfig`] takes when no fetcher is configured).
 pub struct Credentials2111Config {
     /// The credentials this server returns on every successful request — its
     /// `token` is the issued *Token C* the registry is keyed by.
     pub own_credentials: Credentials2111,
-    registered: std::sync::RwLock<std::collections::HashMap<String, Credentials2111>>,
+    registered: std::sync::RwLock<std::collections::HashMap<String, RegisteredParty2111>>,
+    /// OCPI versions this server supports, used to negotiate the fetch-back
+    /// version against the registering party's `/versions` list.
+    supported_versions: Vec<VersionNumber>,
+    /// Optional transport for the registration fetch-back. When `None`, the
+    /// fetch-back step is skipped and parties register without an endpoint
+    /// catalogue.
+    fetcher: Option<std::sync::Arc<dyn LegacyVersionFetcher>>,
+}
+
+/// A registered 2.1.1 remote party: their flat [`Credentials2111`] plus, when
+/// the registration fetch-back ran, the role-less endpoint catalogue fetched
+/// from their `/versions` details. The 2.1.1 counterpart to [`RegisteredParty`].
+#[derive(Debug, Clone)]
+pub struct RegisteredParty2111 {
+    /// The flat credentials object the party presented at registration.
+    pub credentials: Credentials2111,
+    /// Endpoints fetched from the party's selected version details, or `None`
+    /// when no [`LegacyVersionFetcher`] was configured (fetch-back skipped).
+    pub endpoints: Option<Vec<Endpoint2111>>,
 }
 
 impl std::fmt::Debug for Credentials2111Config {
@@ -616,6 +668,8 @@ impl std::fmt::Debug for Credentials2111Config {
                 "registered_count",
                 &self.registered.read().map(|m| m.len()).unwrap_or(0),
             )
+            .field("supported_versions", &self.supported_versions)
+            .field("fetch_back", &self.fetcher.is_some())
             .finish()
     }
 }
@@ -623,13 +677,39 @@ impl std::fmt::Debug for Credentials2111Config {
 impl Credentials2111Config {
     /// Create a new 2.1.1 registry with the given server credentials.
     ///
-    /// No parties are registered initially. Parties register via the axum
-    /// router ([`http::credentials_2_1_1_router`]) or [`register`](Self::register).
+    /// No parties are registered initially and no registration fetch-back is
+    /// performed (parties register without an endpoint catalogue). Parties
+    /// register via the axum router ([`http::credentials_2_1_1_router`]) or
+    /// [`register`](Self::register). Use
+    /// [`new_with_fetcher`](Self::new_with_fetcher) to enable the fetch-back.
     #[must_use]
     pub fn new(own_credentials: Credentials2111) -> Self {
         Self {
             own_credentials,
             registered: std::sync::RwLock::new(std::collections::HashMap::new()),
+            supported_versions: vec![VersionNumber::V2_1_1],
+            fetcher: None,
+        }
+    }
+
+    /// Create a 2.1.1 registry that performs the registration fetch-back.
+    ///
+    /// On `POST`/`PUT /credentials`, the server calls `fetcher` to `GET` the
+    /// registering party's `/versions` list, selects the highest version that
+    /// is also in `supported_versions`, fetches that version's **role-less**
+    /// endpoint catalogue, and stores it alongside the party's credentials. Any
+    /// failure surfaces as OCPI status code `3001`.
+    #[must_use]
+    pub fn new_with_fetcher(
+        own_credentials: Credentials2111,
+        supported_versions: Vec<VersionNumber>,
+        fetcher: std::sync::Arc<dyn LegacyVersionFetcher>,
+    ) -> Self {
+        Self {
+            own_credentials,
+            registered: std::sync::RwLock::new(std::collections::HashMap::new()),
+            supported_versions,
+            fetcher: Some(fetcher),
         }
     }
 
@@ -642,32 +722,122 @@ impl Credentials2111Config {
             .contains_key(token)
     }
 
-    /// Register a new party under `token`, storing their flat credentials.
+    /// Register a new party under `token`, storing their flat credentials
+    /// without an endpoint catalogue.
     ///
     /// # Errors
     ///
     /// Returns [`ServerError::AlreadyRegistered`] if `token` is already known.
     pub fn register(&self, token: &str, credentials: Credentials2111) -> Result<(), ServerError> {
+        self.register_with_endpoints(token, credentials, None)
+    }
+
+    /// Register a new party under `token`, storing their flat credentials and
+    /// the role-less endpoint catalogue fetched during the handshake.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::AlreadyRegistered`] if `token` is already known.
+    pub fn register_with_endpoints(
+        &self,
+        token: &str,
+        credentials: Credentials2111,
+        endpoints: Option<Vec<Endpoint2111>>,
+    ) -> Result<(), ServerError> {
         let mut map = self.registered.write().expect("lock not poisoned");
         if map.contains_key(token) {
             return Err(ServerError::AlreadyRegistered);
         }
-        map.insert(token.to_owned(), credentials);
+        map.insert(
+            token.to_owned(),
+            RegisteredParty2111 {
+                credentials,
+                endpoints,
+            },
+        );
         Ok(())
     }
 
-    /// Update the stored credentials for an already-registered party.
+    /// Update the stored credentials for an already-registered party, clearing
+    /// any stored endpoint catalogue.
     ///
     /// # Errors
     ///
     /// Returns [`ServerError::NotRegistered`] if `token` is not in the registry.
     pub fn update(&self, token: &str, credentials: Credentials2111) -> Result<(), ServerError> {
+        self.update_with_endpoints(token, credentials, None)
+    }
+
+    /// Update the stored credentials and role-less endpoint catalogue for an
+    /// already-registered party.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotRegistered`] if `token` is not in the registry.
+    pub fn update_with_endpoints(
+        &self,
+        token: &str,
+        credentials: Credentials2111,
+        endpoints: Option<Vec<Endpoint2111>>,
+    ) -> Result<(), ServerError> {
         let mut map = self.registered.write().expect("lock not poisoned");
         if !map.contains_key(token) {
             return Err(ServerError::NotRegistered);
         }
-        map.insert(token.to_owned(), credentials);
+        map.insert(
+            token.to_owned(),
+            RegisteredParty2111 {
+                credentials,
+                endpoints,
+            },
+        );
         Ok(())
+    }
+
+    /// Return the role-less endpoint catalogue stored for a registered party.
+    ///
+    /// Returns `None` when the token is unknown or when the party registered
+    /// without a fetch-back (no [`LegacyVersionFetcher`] configured).
+    #[must_use]
+    pub fn get_endpoints(&self, token: &str) -> Option<Vec<Endpoint2111>> {
+        self.registered
+            .read()
+            .expect("lock not poisoned")
+            .get(token)
+            .and_then(|party| party.endpoints.clone())
+    }
+
+    /// Run the 2.1.1 registration fetch-back for a registering party.
+    ///
+    /// Returns `Ok(None)` when no [`LegacyVersionFetcher`] is configured (the
+    /// step is skipped). Otherwise it `GET`s the party's `/versions` list,
+    /// selects the highest mutually-supported version, fetches that version's
+    /// role-less endpoint catalogue, and returns it.
+    ///
+    /// The presented [`Credentials2111::token`] is used as the OCPI
+    /// authorization credential for the outbound calls;
+    /// [`Credentials2111::url`] is the party's `/versions` URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FetchError`] on any transport, negotiation, or parse failure.
+    /// Callers map this to OCPI status code `3001`.
+    pub async fn fetch_back(
+        &self,
+        credentials: &Credentials2111,
+    ) -> Result<Option<Vec<Endpoint2111>>, FetchError> {
+        let Some(fetcher) = self.fetcher.as_ref() else {
+            return Ok(None);
+        };
+        let url = credentials.url.as_str();
+        let token = credentials.token.as_str();
+        let remote = fetcher.fetch_versions(url, token).await?;
+        let chosen = select_best_version(&remote, &self.supported_versions)
+            .ok_or(FetchError::NoMutualVersion)?;
+        let details = fetcher
+            .fetch_version_details(chosen.url.as_str(), token)
+            .await?;
+        Ok(Some(details.endpoints))
     }
 
     /// Invalidate `token`, removing it from the registry if present.
@@ -3114,6 +3284,16 @@ pub mod http {
         .into_response()
     }
 
+    /// `3001` — the server could not use the registering party's API during the
+    /// 2.1.1 fetch-back (could not retrieve its `/versions` or version details).
+    fn credentials_2_1_1_unable_to_use_client() -> Response {
+        Json(OcpiResponse::<Credentials2111>::error(
+            OcpiStatusCode::UnableToUseClientApi,
+            "unable to use the client's API",
+        ))
+        .into_response()
+    }
+
     async fn credentials_2_1_1_get(
         State(cfg): State<Arc<Credentials2111Config>>,
         headers: HeaderMap,
@@ -3144,7 +3324,14 @@ pub mod http {
         if cfg.is_registered(cfg.own_credentials.token.as_str()) {
             return credentials_2_1_1_method_not_allowed("already registered");
         }
-        match cfg.register(cfg.own_credentials.token.as_str(), body) {
+        // 2.1.1 §Registration: the receiver fetches the sender's role-less
+        // endpoints, authenticating with the sender's Token B (`body.token`).
+        // Any failure → status code 3001. A no-op (`Ok(None)`) when no fetcher.
+        let endpoints = match cfg.fetch_back(&body).await {
+            Ok(endpoints) => endpoints,
+            Err(_) => return credentials_2_1_1_unable_to_use_client(),
+        };
+        match cfg.register_with_endpoints(cfg.own_credentials.token.as_str(), body, endpoints) {
             Ok(()) => {
                 // Burn the single-use bootstrap Token A once the Sender holds
                 // Token C. Guard against a misconfiguration where Token C equals
@@ -3174,9 +3361,14 @@ pub mod http {
         if !cfg.is_registered(token.as_str()) {
             return credentials_2_1_1_method_not_allowed("not registered");
         }
+        // 2.1.1 §PUT: re-fetch the sender's role-less endpoints on update.
+        let endpoints = match cfg.fetch_back(&body).await {
+            Ok(endpoints) => endpoints,
+            Err(_) => return credentials_2_1_1_unable_to_use_client(),
+        };
         // The registration is keyed by Token C (`own_credentials.token`); update
         // under that same key rather than the bearer.
-        match cfg.update(cfg.own_credentials.token.as_str(), body) {
+        match cfg.update_with_endpoints(cfg.own_credentials.token.as_str(), body, endpoints) {
             Ok(()) => Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response(),
             Err(ServerError::NotRegistered) => {
                 credentials_2_1_1_method_not_allowed("not registered")
@@ -4655,9 +4847,13 @@ pub mod http {
     #[cfg(test)]
     mod credentials_2_1_1_tests {
         use super::*;
+        use crate::{
+            Endpoint2111, FetchError, FetchFuture, LegacyVersionDetails, LegacyVersionFetcher,
+        };
+        use ocpi_types::version::{Version, VersionNumber};
         use ocpi_types::{
             common::{BusinessDetails, CiString2, CiString3},
-            Url,
+            serde_json, ModuleID, OcpiResponse, OcpiStatusCode, Url,
         };
 
         fn creds(token: &str) -> Credentials2111 {
@@ -4773,6 +4969,117 @@ pub mod http {
                 credentials_2_1_1_put(State(cfg.clone()), auth("TOKEN_C"), Json(creds("TOKEN_B")))
                     .await;
             assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        }
+
+        // ── Fetch-back (#115) ──────────────────────────────────────────────
+
+        /// A canned role-less [`LegacyVersionFetcher`] returning a fixed 2.1.1
+        /// catalogue (no HTTP). The live transport path is covered by the e2e
+        /// test in `crates/ocpi-client/tests/m7_credentials_2_1_1_fetch_back.rs`.
+        struct StubLegacyFetcher {
+            details: LegacyVersionDetails,
+            fail: bool,
+        }
+
+        impl LegacyVersionFetcher for StubLegacyFetcher {
+            fn fetch_versions<'a>(
+                &'a self,
+                _url: &'a str,
+                _token: &'a str,
+            ) -> FetchFuture<'a, Vec<Version>> {
+                let version = self.details.version;
+                let fail = self.fail;
+                Box::pin(async move {
+                    if fail {
+                        return Err(FetchError::Transport("unreachable".into()));
+                    }
+                    Ok(vec![Version {
+                        version,
+                        url: Url::try_from("https://party.example/versions/2.1.1").unwrap(),
+                    }])
+                })
+            }
+
+            fn fetch_version_details<'a>(
+                &'a self,
+                _url: &'a str,
+                _token: &'a str,
+            ) -> FetchFuture<'a, LegacyVersionDetails> {
+                let details = self.details.clone();
+                Box::pin(async move { Ok(details) })
+            }
+        }
+
+        fn stub_details() -> LegacyVersionDetails {
+            LegacyVersionDetails {
+                version: VersionNumber::V2_1_1,
+                endpoints: vec![Endpoint2111 {
+                    identifier: ModuleID::Locations,
+                    url: Url::try_from("https://party.example/2.1.1/locations").unwrap(),
+                }],
+            }
+        }
+
+        fn config_with_fetcher(fail: bool) -> Arc<Credentials2111Config> {
+            Arc::new(Credentials2111Config::new_with_fetcher(
+                creds("TOKEN_C"),
+                vec![VersionNumber::V2_1_1],
+                Arc::new(StubLegacyFetcher {
+                    details: stub_details(),
+                    fail,
+                }),
+            ))
+        }
+
+        #[tokio::test]
+        async fn post_with_fetcher_stores_role_less_endpoints() {
+            let cfg = config_with_fetcher(false);
+            let resp =
+                credentials_2_1_1_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B")))
+                    .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let stored = cfg
+                .get_endpoints("TOKEN_C")
+                .expect("fetch-back stores endpoints under Token C");
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].identifier, ModuleID::Locations);
+        }
+
+        #[tokio::test]
+        async fn post_with_failed_fetch_back_is_3001_and_unregistered() {
+            let cfg = config_with_fetcher(true);
+            let resp =
+                credentials_2_1_1_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B")))
+                    .await;
+            // 3001 is carried in the OCPI envelope with an HTTP 200 body.
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let env: OcpiResponse<Credentials2111> = serde_json::from_slice(&body).unwrap();
+            assert_eq!(env.status_code, OcpiStatusCode::UnableToUseClientApi);
+            assert!(
+                !cfg.is_registered("TOKEN_C"),
+                "a failed fetch-back must not register the party"
+            );
+        }
+
+        #[tokio::test]
+        async fn post_without_fetcher_registers_with_no_endpoints() {
+            let cfg = config(); // built with `new` — no fetcher
+            credentials_2_1_1_post(State(cfg.clone()), auth("TOKEN_A"), Json(creds("TOKEN_B")))
+                .await;
+            assert!(cfg.is_registered("TOKEN_C"));
+            assert!(
+                cfg.get_endpoints("TOKEN_C").is_none(),
+                "no fetcher → no stored catalogue (the #112 path)"
+            );
+        }
+
+        #[test]
+        fn new_with_fetcher_debug_surfaces_fetch_back_flag() {
+            let cfg = config_with_fetcher(false);
+            assert!(format!("{cfg:?}").contains("fetch_back: true"));
         }
     }
 }
