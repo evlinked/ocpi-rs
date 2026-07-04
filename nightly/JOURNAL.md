@@ -5,6 +5,30 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-04 — M7 Tokens 2.1.1 client slice (issue #123) — completes module
+
+- **Sync:** 0 open PRs. **Groom:** M7 has 3 `nightly` issues (#123/#124/#125) —
+  no new issues needed. Sat run (not Sunday) → no hard groom.
+- **Issue #123** client slice, the follow-up to last night's server slice (#137):
+  `OcpiClient::{get_tokens,put_token,patch_token,authorize_token}_2_1_1` against
+  `v2_1_1` token types, plus a `token_type_2_1_1_str` helper (2.1.1 has only
+  `OTHER`/`RFID`). Mirrors the 2.2.1 tokens client; paths identical (§12.2.2 keeps
+  `{cc}/{party}/{uid}` — client-owned object). Flips README Tokens 2.1.1 ◑ → ☑.
+- **Test:** `m7_tokens_2_1_1.rs` — in-process axum `tokens_2_1_1_router` round-trip:
+  paginated list (2-of-3 + next-page), PUT→store round-trip, authorize ALLOWED
+  (echoes 2.1.1-only `connector_ids`), PATCH invalid→BLOCKED clears location, plus
+  authorize/patch 404→`NotFound`. +2 tests.
+- **CI (local):** fmt ✅ · clippy `--all-features -D warnings` ✅ · test
+  `--all-features` ✅ (all green, +2) · `cargo deny` not installed in runner but
+  zero deps / no `Cargo.toml` touched → no-op (CI runs it). 460 additions, no
+  guarded paths → auto-mergeable.
+- **What worked:** reusing `join_segments` (the 2.1.1 sessions/tariffs idiom) instead
+  of copying 2.2.1's inline `format!`; verifying PUT via the shared `store.get()`
+  since 2.1.1 (like 2.2.1) has no single-token client getter.
+- **Next:** #124 (2.1.1 Commands client+server — no `CANCEL_RESERVATION`, full-`Token`
+  `StartSession`) or #125 (2.1.1 Locations *receiver* router). #124 is the larger,
+  higher-value slice; may need a sender/receiver split like Tokens did.
+
 ## 2026-07-03 — M7 Tokens 2.1.1 server slice (issue #123) — PR #137
 
 - **Sync:** 0 open PRs (drained; #134/#135/#136 landed). **Groom:** M7 has 3

@@ -44,6 +44,14 @@ use ocpi_types::v2_1_1::Session as Session2111;
 // from the root-exported 2.2.1 `Cdr` above. See `crate::get_cdrs_2_1_1`.
 use ocpi_types::v2_1_1::Cdr as Cdr2111;
 use ocpi_types::v2_1_1::{Connector as Connector2111, Evse as Evse2111, Location as Location2111};
+// The OCPI 2.1.1 Tokens types (`Token` keys on `auth_id` with `OTHER`/`RFID`
+// only; `AuthorizationInfo` omits `token`/`authorization_reference`; its
+// `LocationReferences` keeps the 2.1.1-only `connector_ids`), aliased to keep the
+// unqualified names for the 2.2.1 surface above. See `crate::get_tokens_2_1_1`.
+use ocpi_types::v2_1_1::{
+    AuthorizationInfo as AuthorizationInfo2111, LocationReferences as LocationReferences2111,
+    Token as Token2111, TokenType as TokenType2111,
+};
 use url::Url;
 
 fn token_type_str(t: TokenType) -> &'static str {
@@ -52,6 +60,15 @@ fn token_type_str(t: TokenType) -> &'static str {
         TokenType::AppUser => "APP_USER",
         TokenType::Other => "OTHER",
         TokenType::Rfid => "RFID",
+    }
+}
+
+/// The OCPI **2.1.1** [`TokenType2111`] `?type=` query value. 2.1.1 defines only
+/// `OTHER` and `RFID` (the `AD_HOC_USER` / `APP_USER` variants are 2.2 additions).
+fn token_type_2_1_1_str(t: TokenType2111) -> &'static str {
+    match t {
+        TokenType2111::Other => "OTHER",
+        TokenType2111::Rfid => "RFID",
     }
 }
 
@@ -1778,6 +1795,206 @@ impl OcpiClient {
         }
         response.error_for_status()?;
         Ok(())
+    }
+
+    // ── Tokens (2.1.1) ──────────────────────────────────────────────────────────
+
+    /// Fetch a paginated list of **OCPI 2.1.1** Tokens from an eMSP's Sender
+    /// interface (`GET {url}`).
+    ///
+    /// Mirrors [`OcpiClient::get_tokens`] but deserializes the *2.1.1* wire shape
+    /// ([`ocpi_types::v2_1_1::Token`]: `auth_id` keying, `OTHER`/`RFID` only, no
+    /// `country_code`/`party_id`). The Tokens sender path is flat — identical to
+    /// 2.2.1; only the payload type differs.
+    ///
+    /// `url` is the absolute URL of the eMSP's 2.1.1 Tokens sender endpoint;
+    /// `params` carries `date_from`, `date_to`, `offset`, and `limit`. Use
+    /// [`PaginationMeta::next_url`] to retrieve subsequent pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// envelope carries no data.
+    ///
+    /// See `specs/ocpi/2.1.1` — *Tokens*, Sender Interface (§12.2.1), GET List.
+    pub async fn get_tokens_2_1_1(
+        &self,
+        url: &str,
+        params: PaginatedParams,
+    ) -> Result<(Vec<Token2111>, PaginationMeta), ClientError> {
+        let mut parsed = url::Url::parse(url)?;
+        if let Some(date_from) = params.date_from {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_from", &date_from.to_rfc3339());
+        }
+        if let Some(date_to) = params.date_to {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_to", &date_to.to_rfc3339());
+        }
+        if let Some(offset) = params.offset {
+            parsed
+                .query_pairs_mut()
+                .append_pair("offset", &offset.to_string());
+        }
+        if let Some(limit) = params.limit {
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?
+            .error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<Token2111>> = response.json().await?;
+        let tokens = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((tokens, meta))
+    }
+
+    /// Push or replace an **OCPI 2.1.1** Token on a CPO's Receiver interface
+    /// (`PUT {url}/{country_code}/{party_id}/{token_uid}?type=`).
+    ///
+    /// Per OCPI 2.1.1 §12.2.2 a Token is a client-owned object, so the receiver
+    /// path carries the `{country_code}/{party_id}` segments — identical to
+    /// 2.2.1's [`OcpiClient::put_token`]; only the payload type differs.
+    /// `token_type` is always sent explicitly as the `?type=` query parameter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn put_token_2_1_1(
+        &self,
+        url: &str,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+        token: &Token2111,
+    ) -> Result<(), ClientError> {
+        let base = join_segments(url, &[country_code, party_id, token_uid]);
+        let mut parsed = url::Url::parse(&base)?;
+        parsed
+            .query_pairs_mut()
+            .append_pair("type", token_type_2_1_1_str(token_type));
+        self.http
+            .put(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(token)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Apply a partial update (JSON merge-patch, RFC 7396) to an **OCPI 2.1.1**
+    /// Token on a CPO's Receiver interface
+    /// (`PATCH {url}/{country_code}/{party_id}/{token_uid}?type=`).
+    ///
+    /// `partial` is any `Serialize` value; use a struct with
+    /// `#[serde(skip_serializing_if = "Option::is_none")]` fields, or a
+    /// `serde_json::Value` map, to send only the changed fields.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the server returns HTTP 404.
+    /// - [`ClientError::Http`] on network or server errors.
+    pub async fn patch_token_2_1_1<T: ocpi_types::serde::Serialize>(
+        &self,
+        url: &str,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+        partial: &T,
+    ) -> Result<(), ClientError> {
+        let base = join_segments(url, &[country_code, party_id, token_uid]);
+        let mut parsed = url::Url::parse(&base)?;
+        parsed
+            .query_pairs_mut()
+            .append_pair("type", token_type_2_1_1_str(token_type));
+        let response = self
+            .http
+            .patch(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(partial)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        response.error_for_status()?;
+        Ok(())
+    }
+
+    /// Request real-time authorization for an **OCPI 2.1.1** Token from an eMSP
+    /// (`POST {url}/{token_uid}/authorize?type=`).
+    ///
+    /// `location` is an optional [`LocationReferences2111`] body for
+    /// location-scoped authorization; the 2.1.1 shape keeps `connector_ids`.
+    /// Returns the 2.1.1 [`AuthorizationInfo2111`] (no `token`, no
+    /// `authorization_reference`) when the token is known to the eMSP.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the eMSP responds with HTTP 404
+    ///   (OCPI 2004 — token unknown).
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    /// - [`ClientError::Http`] on network or server errors.
+    ///
+    /// See `specs/ocpi/2.1.1` — *Tokens*, real-time *authorize* (§12.3).
+    pub async fn authorize_token_2_1_1(
+        &self,
+        url: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+        location: Option<&LocationReferences2111>,
+    ) -> Result<AuthorizationInfo2111, ClientError> {
+        let base = format!("{}/{token_uid}/authorize", url.trim_end_matches('/'));
+        let mut parsed = url::Url::parse(&base)?;
+        parsed
+            .query_pairs_mut()
+            .append_pair("type", token_type_2_1_1_str(token_type));
+        let mut req = self
+            .http
+            .post(parsed)
+            .header("Authorization", self.auth_header_value());
+        if let Some(loc) = location {
+            req = req.json(loc);
+        }
+        let response = req.send().await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<AuthorizationInfo2111> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
     }
 
     // ── Tokens ────────────────────────────────────────────────────────────────
