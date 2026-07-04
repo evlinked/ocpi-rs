@@ -73,6 +73,19 @@ cycle. Keep entries short and specific. Prune contradictions.
   oneshot tests and keep sync `Config` tests so `Cargo.toml` stays untouched → auto-mergeable.
   HTTP-level coverage belongs in the dedicated e2e smoke-test issue (#23/#32), which introduces
   the harness dev-deps in its own PR.
+- **The 800 size cap counts the WHOLE PR (incl. `nightly/*.md`), and a 2.1.1
+  module whose prod code alone tops ~800 must split sender/receiver.** Tokens is
+  the first: ~844 prod-only additions (adds the `authorize` endpoint +
+  `AuthorizationInfo`/`LocationReferences` types) vs CDRs/Tariffs/Sessions that
+  fit client+server+test under 800. Ship **server-first** (types + handler/config/
+  router incl. authorize + inline `*Config` tests), client sender + round-trip
+  test as follow-up. Don't defer `authorize` to fit — split the axis. And keep
+  the journal/learnings edits terse (≤~30 add) so the split slice stays ≤800.
+- **2.1.1 Tokens transport = 2.2.1 (spec §12.2.2).** Receiver
+  `/tokens/{cc}/{party}/{token_uid}?type=` (client-owned), GET/PUT/PATCH, keyed by
+  Token `uid` **not** `auth_id`; sender `GET /tokens` + `POST .../authorize`. 2.1.1
+  `LocationReferences` keeps `connector_ids`; `AuthorizationInfo` omits `token`/
+  `authorization_reference`. Issue's "flat/`auth_id`" is the recurring trap.
 - **Before re-delivering old type work, grep `main` for the types first.** M4/M5/M6 added
   `TokenType`, `ConnectorType`, `ConnectorFormat`, `PowerType` to `v2_2_1.rs` ahead of the
   Locations module (Sessions/CDRs/Tokens referenced them). Re-applying an older Locations

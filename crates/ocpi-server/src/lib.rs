@@ -45,6 +45,14 @@ use ocpi_types::v2_1_1::Session as Session2111;
 // keep it distinct from the role-bearing 2.2.1 `Cdr` imported above. See
 // [`Cdrs2111Config`].
 use ocpi_types::v2_1_1::Cdr as Cdr2111;
+// The OCPI 2.1.1 Tokens surface — `Token` keys on `auth_id`, `TokenType` covers
+// only `OTHER`/`RFID`, and `AuthorizationInfo` omits `token`/
+// `authorization_reference` — aliased to keep the 2.2.1 names above unqualified.
+// See [`Tokens2111Config`].
+use ocpi_types::v2_1_1::{
+    AuthorizationInfo as AuthorizationInfo2111, LocationReferences as LocationReferences2111,
+    Token as Token2111, TokenType as TokenType2111,
+};
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -2221,6 +2229,341 @@ impl Tariffs2111Handler for Tariffs2111Config {
     }
 }
 
+// ── Tokens2111Handler (OCPI 2.1.1) ──────────────────────────────────────────────
+
+/// Handles the OCPI **2.1.1** Tokens module endpoints.
+///
+/// Implements the **sender** interface (eMSP exposes `GET /tokens` list for CPO
+/// pull, plus the real-time `POST /tokens/{token_uid}/authorize`) and the
+/// **receiver** interface (CPO receives `GET/PUT/PATCH
+/// /tokens/{country_code}/{party_id}/{token_uid}`).
+///
+/// ## Delta from the 2.2.1 [`TokensHandler`]
+///
+/// Per OCPI 2.1.1 §12.2.2 *"Token is a client owned object, so the end-points
+/// need to contain the required extra fields: {party_id} and {country_code}"*,
+/// so the receiver path carries the `{country_code}/{party_id}/{token_uid}`
+/// segments exactly as in 2.2.1 — those URL segments predate the 2.2
+/// `OCPI-to/from-*` routing *headers*. Only the payload differs: the 2.1.1
+/// [`Token2111`] (`auth_id`, `OTHER`/`RFID` only) and the slimmer 2.1.1
+/// [`AuthorizationInfo2111`] (no `token`, no `authorization_reference`).
+///
+/// Spec: OCPI 2.1.1 — *Tokens* module (§12), `specs/ocpi/2.1.1/OCPI_2.1.1.pdf`.
+#[allow(async_fn_in_trait)]
+pub trait Tokens2111Handler {
+    /// Paginated list of 2.1.1 tokens whose `last_updated` is in
+    /// `[date_from, date_to)` — sender interface (`GET /tokens`).
+    ///
+    /// Returns `(page_items, total_count)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the query cannot be executed.
+    async fn get_tokens(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<Token2111>, u32), ServerError>;
+
+    /// Fetch a single 2.1.1 token by its composite key — receiver interface
+    /// (`GET /tokens/{country_code}/{party_id}/{token_uid}?type=`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when the token does not exist.
+    async fn get_token(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+    ) -> Result<Token2111, ServerError>;
+
+    /// Create or replace a 2.1.1 token — receiver interface (`PUT`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] on storage failure.
+    async fn put_token(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+        token: Token2111,
+    ) -> Result<(), ServerError>;
+
+    /// Apply a JSON merge-patch (RFC 7396) to an existing 2.1.1 token — receiver
+    /// interface (`PATCH`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when the token does not exist.
+    async fn patch_token(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError>;
+
+    /// Real-time authorization — sender interface
+    /// (`POST /tokens/{token_uid}/authorize?type=`).
+    ///
+    /// Returns the 2.1.1 [`AuthorizationInfo2111`] when the token is known.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::UnknownToken`] (OCPI 2004) when the token is not
+    /// found in this eMSP's system.
+    async fn authorize(
+        &self,
+        token_uid: &str,
+        token_type: TokenType2111,
+        location: Option<LocationReferences2111>,
+    ) -> Result<AuthorizationInfo2111, ServerError>;
+}
+
+// ── Tokens2111Config (OCPI 2.1.1) ───────────────────────────────────────────────
+
+/// Thread-safe in-memory **OCPI 2.1.1** tokens store for use with
+/// [`http::tokens_2_1_1_router`].
+///
+/// Mirrors [`TokensConfig`] but stores the 2.1.1 [`Token2111`] shape and returns
+/// the 2.1.1 [`AuthorizationInfo2111`]. Tokens are keyed by
+/// `"{country_code}/{party_id}/{token_uid}/{token_type}"`. Wrap in `Arc` to
+/// share across axum handlers or multiple threads.
+pub struct Tokens2111Config {
+    tokens: std::sync::RwLock<std::collections::HashMap<String, Token2111>>,
+}
+
+impl std::fmt::Debug for Tokens2111Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens2111Config")
+            .field(
+                "token_count",
+                &self.tokens.read().map(|m| m.len()).unwrap_or(0),
+            )
+            .finish()
+    }
+}
+
+impl Tokens2111Config {
+    /// Create an empty 2.1.1 tokens store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tokens: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn composite_key(
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+    ) -> String {
+        format!(
+            "{country_code}/{party_id}/{token_uid}/{}",
+            token_type_2_1_1_str(token_type)
+        )
+    }
+
+    /// Insert or replace a token.
+    pub fn put(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+        token: Token2111,
+    ) {
+        let key = Self::composite_key(country_code, party_id, token_uid, token_type);
+        self.tokens
+            .write()
+            .expect("lock not poisoned")
+            .insert(key, token);
+    }
+
+    /// Retrieve a token by its composite key.
+    #[must_use]
+    pub fn get(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+    ) -> Option<Token2111> {
+        let key = Self::composite_key(country_code, party_id, token_uid, token_type);
+        self.tokens
+            .read()
+            .expect("lock not poisoned")
+            .get(&key)
+            .cloned()
+    }
+
+    /// Apply a JSON merge-patch to an existing token.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] if no token matches the key.
+    pub fn patch_json(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, token_uid, token_type);
+        let mut map = self.tokens.write().expect("lock not poisoned");
+        let token = map.get(&key).ok_or(ServerError::NotFound)?;
+        let mut base = ocpi_types::serde_json::to_value(token.clone())
+            .map_err(|_| ServerError::NotImplemented("patch serialize"))?;
+        json_merge(&mut base, partial);
+        let updated: Token2111 = ocpi_types::serde_json::from_value(base)
+            .map_err(|_| ServerError::NotImplemented("patch deserialize"))?;
+        map.insert(key, updated);
+        Ok(())
+    }
+
+    /// Return a filtered and paginated slice of tokens.
+    ///
+    /// Filters by `last_updated >= date_from` and (if provided)
+    /// `last_updated < date_to`. Results are sorted by `last_updated`.
+    ///
+    /// Returns `(page_items, total_matching_count)`.
+    #[must_use]
+    pub fn list(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Token2111>, u32) {
+        let map = self.tokens.read().expect("lock not poisoned");
+        let mut filtered: Vec<&Token2111> = map
+            .values()
+            .filter(|t| t.last_updated >= date_from && date_to.is_none_or(|dt| t.last_updated < dt))
+            .collect();
+        filtered.sort_by_key(|t| t.last_updated);
+        let total = filtered.len() as u32;
+        let page: Vec<Token2111> = filtered
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        (page, total)
+    }
+
+    /// Perform a real-time authorization lookup by `uid` and `token_type`.
+    ///
+    /// Searches all stored tokens (regardless of owner party) for a match.
+    /// A valid token yields `ALLOWED` (echoing the requested `location`); an
+    /// invalid one yields `BLOCKED` (with `location` cleared).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::UnknownToken`] (OCPI 2004) if no token with the
+    /// given uid and type is known to this store.
+    pub fn authorize(
+        &self,
+        token_uid: &str,
+        token_type: TokenType2111,
+        location: Option<LocationReferences2111>,
+    ) -> Result<AuthorizationInfo2111, ServerError> {
+        use ocpi_types::v2_2_1::AllowedType;
+        let map = self.tokens.read().expect("lock not poisoned");
+        let token = map
+            .values()
+            .find(|t| t.uid.as_str() == token_uid && t.token_type == token_type)
+            .ok_or(ServerError::UnknownToken)?;
+        let allowed = if token.valid {
+            AllowedType::Allowed
+        } else {
+            AllowedType::Blocked
+        };
+        let location = if matches!(allowed, AllowedType::Allowed) {
+            location
+        } else {
+            None
+        };
+        Ok(AuthorizationInfo2111 {
+            allowed,
+            location,
+            info: None,
+        })
+    }
+}
+
+impl Default for Tokens2111Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(async_fn_in_trait)]
+impl Tokens2111Handler for Tokens2111Config {
+    async fn get_tokens(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<Token2111>, u32), ServerError> {
+        Ok(self.list(date_from, date_to, offset, limit))
+    }
+
+    async fn get_token(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+    ) -> Result<Token2111, ServerError> {
+        self.get(country_code, party_id, token_uid, token_type)
+            .ok_or(ServerError::NotFound)
+    }
+
+    async fn put_token(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+        token: Token2111,
+    ) -> Result<(), ServerError> {
+        self.put(country_code, party_id, token_uid, token_type, token);
+        Ok(())
+    }
+
+    async fn patch_token(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        token_uid: &str,
+        token_type: TokenType2111,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError> {
+        self.patch_json(country_code, party_id, token_uid, token_type, partial)
+    }
+
+    async fn authorize(
+        &self,
+        token_uid: &str,
+        token_type: TokenType2111,
+        location: Option<LocationReferences2111>,
+    ) -> Result<AuthorizationInfo2111, ServerError> {
+        // The inherent `authorize` shadows this trait method (inherent wins in
+        // method lookup), so this delegates to the store without recursing.
+        self.authorize(token_uid, token_type, location)
+    }
+}
+
 // ── TokensHandler ─────────────────────────────────────────────────────────────
 
 /// Handles the OCPI Tokens module endpoints.
@@ -2334,6 +2677,13 @@ fn token_type_str(t: TokenType) -> &'static str {
         TokenType::AppUser => "APP_USER",
         TokenType::Other => "OTHER",
         TokenType::Rfid => "RFID",
+    }
+}
+
+fn token_type_2_1_1_str(t: TokenType2111) -> &'static str {
+    match t {
+        TokenType2111::Other => "OTHER",
+        TokenType2111::Rfid => "RFID",
     }
 }
 
@@ -3662,10 +4012,11 @@ pub mod http {
     };
 
     use crate::{
-        token_type_str, Cdrs2111Config, CdrsConfig, ChargingProfilesConfig,
+        token_type_2_1_1_str, token_type_str, Cdrs2111Config, CdrsConfig, ChargingProfilesConfig,
         ChargingProfilesHandler, CommandsConfig, CommandsHandler, Credentials2111Config,
         CredentialsConfig, HubClientInfoConfig, LocationsConfig, ServerError, Sessions2111Config,
-        SessionsConfig, Tariffs2111Config, TariffsConfig, TokensConfig, VersionsConfig,
+        SessionsConfig, Tariffs2111Config, TariffsConfig, Tokens2111Config, TokensConfig,
+        VersionsConfig,
     };
     // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
     use ocpi_types::v2_1_1::Credentials as Credentials2111;
@@ -3675,6 +4026,11 @@ pub mod http {
     use ocpi_types::v2_1_1::Session as Session2111;
     // The OCPI 2.1.1 CDR object served by `cdrs_2_1_1_router`.
     use ocpi_types::v2_1_1::Cdr as Cdr2111;
+    // The OCPI 2.1.1 Tokens surface served by `tokens_2_1_1_router`.
+    use ocpi_types::v2_1_1::{
+        AuthorizationInfo as AuthorizationInfo2111, LocationReferences as LocationReferences2111,
+        Token as Token2111, TokenType as TokenType2111,
+    };
 
     // ── Versions ──────────────────────────────────────────────────────────────
 
@@ -4875,6 +5231,171 @@ pub mod http {
             Err(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(OcpiResponse::<AuthorizationInfo>::error(
+                    OcpiStatusCode::ServerError,
+                    "internal error",
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    // ── Tokens (OCPI 2.1.1) ─────────────────────────────────────────────────────
+
+    /// Build an axum router for the OCPI **2.1.1** Tokens module.
+    ///
+    /// Exposes (mirrors [`tokens_router`], with the 2.1.1 [`Token2111`] shape):
+    /// - `GET   /tokens` — paginated list (sender interface, eMSP)
+    /// - `GET   /tokens/{country_code}/{party_id}/{token_uid}` — single
+    /// - `PUT   /tokens/{country_code}/{party_id}/{token_uid}` — upsert
+    /// - `PATCH /tokens/{country_code}/{party_id}/{token_uid}` — merge-patch
+    /// - `POST  /tokens/{token_uid}/authorize` — real-time authorize
+    ///
+    /// The `?type=` query selects the [`TokenType2111`] (defaults to `RFID`).
+    pub fn tokens_2_1_1_router(config: Arc<Tokens2111Config>) -> Router {
+        Router::new()
+            .route("/tokens", get(tokens_2_1_1_list))
+            .route(
+                "/tokens/{country_code}/{party_id}/{token_uid}",
+                get(tokens_2_1_1_get)
+                    .put(tokens_2_1_1_put)
+                    .patch(tokens_2_1_1_patch),
+            )
+            .route(
+                "/tokens/{token_uid}/authorize",
+                post(tokens_2_1_1_authorize),
+            )
+            .with_state(config)
+    }
+
+    #[derive(ocpi_types::serde::Deserialize)]
+    #[serde(crate = "ocpi_types::serde")]
+    struct TypeQuery2111 {
+        #[serde(rename = "type", default = "default_token_type_2_1_1")]
+        token_type: TokenType2111,
+    }
+
+    fn default_token_type_2_1_1() -> TokenType2111 {
+        TokenType2111::Rfid
+    }
+
+    async fn tokens_2_1_1_list(
+        State(cfg): State<Arc<Tokens2111Config>>,
+        Query(params): Query<PaginatedParams>,
+    ) -> Response {
+        use ocpi_types::chrono::TimeZone as _;
+        let date_from = params.date_from.unwrap_or_else(|| {
+            ocpi_types::Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .single()
+                .expect("epoch is valid")
+        });
+        let offset = params.offset.unwrap_or(0);
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
+
+        let (items, total) = cfg.list(date_from, params.date_to, offset, limit);
+        let page = OcpiPaged::new(items, offset, limit, total);
+        let next_offset = page.next_offset();
+        let body = page.into_response();
+
+        let mut response = Json(body).into_response();
+        let hdrs = response.headers_mut();
+        if let Ok(v) = total.to_string().parse() {
+            hdrs.insert("x-total-count", v);
+        }
+        if let Ok(v) = limit.to_string().parse() {
+            hdrs.insert("x-limit", v);
+        }
+        if let Some(next_off) = next_offset {
+            let link = format!("</tokens?offset={next_off}&limit={limit}>; rel=\"next\"");
+            if let Ok(v) = link.parse() {
+                hdrs.insert("link", v);
+            }
+        }
+
+        response
+    }
+
+    async fn tokens_2_1_1_get(
+        State(cfg): State<Arc<Tokens2111Config>>,
+        Path((country_code, party_id, token_uid)): Path<(String, String, String)>,
+        Query(q): Query<TypeQuery2111>,
+    ) -> Response {
+        match cfg.get(&country_code, &party_id, &token_uid, q.token_type) {
+            Some(token) => Json(OcpiResponse::success(token)).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<Token2111>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!(
+                        "token {token_uid}?type={} not found",
+                        token_type_2_1_1_str(q.token_type)
+                    ),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn tokens_2_1_1_put(
+        State(cfg): State<Arc<Tokens2111Config>>,
+        Path((country_code, party_id, token_uid)): Path<(String, String, String)>,
+        Query(q): Query<TypeQuery2111>,
+        Json(token): Json<Token2111>,
+    ) -> Response {
+        cfg.put(&country_code, &party_id, &token_uid, q.token_type, token);
+        Json(OcpiResponse::<Token2111>::success_empty()).into_response()
+    }
+
+    async fn tokens_2_1_1_patch(
+        State(cfg): State<Arc<Tokens2111Config>>,
+        Path((country_code, party_id, token_uid)): Path<(String, String, String)>,
+        Query(q): Query<TypeQuery2111>,
+        Json(partial): Json<ocpi_types::serde_json::Value>,
+    ) -> Response {
+        match cfg.patch_json(&country_code, &party_id, &token_uid, q.token_type, partial) {
+            Ok(()) => Json(OcpiResponse::<Token2111>::success_empty()).into_response(),
+            Err(ServerError::NotFound) => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<Token2111>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!(
+                        "token {token_uid}?type={} not found",
+                        token_type_2_1_1_str(q.token_type)
+                    ),
+                )),
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<Token2111>::error(
+                    OcpiStatusCode::ServerError,
+                    "internal error",
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn tokens_2_1_1_authorize(
+        State(cfg): State<Arc<Tokens2111Config>>,
+        Path(token_uid): Path<String>,
+        Query(q): Query<TypeQuery2111>,
+        body: Option<Json<LocationReferences2111>>,
+    ) -> Response {
+        let location = body.map(|Json(loc)| loc);
+        match cfg.authorize(&token_uid, q.token_type, location) {
+            Ok(auth_info) => Json(OcpiResponse::success(auth_info)).into_response(),
+            Err(ServerError::UnknownToken) => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<AuthorizationInfo2111>::error(
+                    OcpiStatusCode::UnknownToken,
+                    format!("token {token_uid} not known"),
+                )),
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<AuthorizationInfo2111>::error(
                     OcpiStatusCode::ServerError,
                     "internal error",
                 )),
@@ -6829,6 +7350,146 @@ mod tests {
     #[test]
     fn tokens_config_authorize_unknown_token_returns_unknown_token_error() {
         let cfg = TokensConfig::new();
+        let err = cfg.authorize("UNKNOWN", TokenType::Rfid, None).unwrap_err();
+        assert!(matches!(err, ServerError::UnknownToken));
+        assert_eq!(err.status_code(), OcpiStatusCode::UnknownToken);
+    }
+
+    // ── Tokens2111Config tests (OCPI 2.1.1) ───────────────────────────────────
+
+    fn make_token_2_1_1(uid: &str, ts: DateTime<Utc>, valid: bool) -> ocpi_types::v2_1_1::Token {
+        use ocpi_types::common::{CiString36, CiString64};
+        ocpi_types::v2_1_1::Token {
+            uid: CiString36::try_from(uid).unwrap(),
+            token_type: ocpi_types::v2_1_1::TokenType::Rfid,
+            auth_id: CiString36::try_from("DE8ACC12E46L89").unwrap(),
+            visual_number: None,
+            issuer: CiString64::try_from("TestIssuer").unwrap(),
+            valid,
+            whitelist: WhitelistType::Always,
+            language: None,
+            last_updated: ts,
+        }
+    }
+
+    #[test]
+    fn tokens_2_1_1_config_put_and_get_roundtrip() {
+        use ocpi_types::v2_1_1::TokenType;
+        let cfg = Tokens2111Config::new();
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        cfg.put(
+            "NL",
+            "TNM",
+            "T001",
+            TokenType::Rfid,
+            make_token_2_1_1("T001", ts, true),
+        );
+        let got = cfg.get("NL", "TNM", "T001", TokenType::Rfid).unwrap();
+        assert_eq!(got.uid.as_str(), "T001");
+        assert_eq!(got.auth_id.as_str(), "DE8ACC12E46L89");
+        assert!(got.valid);
+        // A different type at the same uid is a distinct key.
+        assert!(cfg.get("NL", "TNM", "T001", TokenType::Other).is_none());
+        assert!(cfg.get("NL", "TNM", "MISSING", TokenType::Rfid).is_none());
+    }
+
+    #[test]
+    fn tokens_2_1_1_config_patch_updates_valid_field() {
+        use ocpi_types::v2_1_1::TokenType;
+        let cfg = Tokens2111Config::new();
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+        cfg.put(
+            "NL",
+            "TNM",
+            "T001",
+            TokenType::Rfid,
+            make_token_2_1_1("T001", ts, true),
+        );
+        let patch =
+            ocpi_types::serde_json::json!({"valid": false, "last_updated": "2024-06-02T00:00:00Z"});
+        cfg.patch_json("NL", "TNM", "T001", TokenType::Rfid, patch)
+            .unwrap();
+        assert!(!cfg.get("NL", "TNM", "T001", TokenType::Rfid).unwrap().valid);
+
+        let err = cfg
+            .patch_json(
+                "NL",
+                "TNM",
+                "MISSING",
+                TokenType::Rfid,
+                ocpi_types::serde_json::json!({"valid": false}),
+            )
+            .unwrap_err();
+        assert!(matches!(err, ServerError::NotFound));
+    }
+
+    #[test]
+    fn tokens_2_1_1_config_list_pagination() {
+        use ocpi_types::v2_1_1::TokenType;
+        let cfg = Tokens2111Config::new();
+        let epoch = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        for i in 0u32..5 {
+            let ts = epoch + ocpi_types::chrono::Duration::seconds(i64::from(i));
+            let uid = format!("T{i:03}");
+            cfg.put(
+                "NL",
+                "TNM",
+                &uid,
+                TokenType::Rfid,
+                make_token_2_1_1(&uid, ts, true),
+            );
+        }
+        let (page, total) = cfg.list(epoch, None, 2, 2);
+        assert_eq!(total, 5);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].uid.as_str(), "T002");
+        assert_eq!(page[1].uid.as_str(), "T003");
+    }
+
+    #[test]
+    fn tokens_2_1_1_config_authorize_valid_echoes_location_with_connector_ids() {
+        use ocpi_types::v2_1_1::{LocationReferences, TokenType};
+        let cfg = Tokens2111Config::new();
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+        cfg.put(
+            "NL",
+            "TNM",
+            "RFID001",
+            TokenType::Rfid,
+            make_token_2_1_1("RFID001", ts, true),
+        );
+        let loc = LocationReferences {
+            location_id: "LOC1".try_into().unwrap(),
+            evse_uids: vec!["3256".try_into().unwrap()],
+            connector_ids: vec!["1".try_into().unwrap()],
+        };
+        let result = cfg
+            .authorize("RFID001", TokenType::Rfid, Some(loc))
+            .unwrap();
+        assert_eq!(result.allowed, AllowedType::Allowed);
+        // 2.1.1 AuthorizationInfo echoes the location (with its 2.1.1-only
+        // connector_ids) and carries no `token` field (type-level guarantee).
+        let echoed = result.location.expect("allowed authorize echoes location");
+        assert_eq!(echoed.location_id.as_str(), "LOC1");
+        assert_eq!(echoed.connector_ids.len(), 1);
+    }
+
+    #[test]
+    fn tokens_2_1_1_config_authorize_invalid_blocked_and_unknown_errors() {
+        use ocpi_types::v2_1_1::TokenType;
+        let cfg = Tokens2111Config::new();
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+        cfg.put(
+            "NL",
+            "TNM",
+            "RFID002",
+            TokenType::Rfid,
+            make_token_2_1_1("RFID002", ts, false),
+        );
+        let blocked = cfg.authorize("RFID002", TokenType::Rfid, None).unwrap();
+        assert_eq!(blocked.allowed, AllowedType::Blocked);
+        assert!(blocked.location.is_none());
+
         let err = cfg.authorize("UNKNOWN", TokenType::Rfid, None).unwrap_err();
         assert!(matches!(err, ServerError::UnknownToken));
         assert_eq!(err.status_code(), OcpiStatusCode::UnknownToken);

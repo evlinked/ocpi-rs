@@ -5,6 +5,21 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-03 — M7 Tokens 2.1.1 server slice (issue #123) — PR #137
+
+- **Sync:** 0 open PRs (drained; #134/#135/#136 landed). **Groom:** M7 has 3
+  `nightly` issues (#123/#124/#125) — no new issues needed.
+- **Issue #123** scoped to the **server** slice: types + `Tokens2111Handler`/
+  `Config`/`tokens_2_1_1_router` (incl. `authorize`); client sender deferred.
+- **CI (local):** fmt ✅ · clippy `--all-features -D warnings` ✅ · test
+  `--all-features` ✅ (+7 tests) · doc ✅. Zero deps → `cargo deny` a no-op.
+- **Spec catch (recurring trap):** issue said flat `auth_id` receiver path; PDF
+  §12.2.2 says `/tokens/{cc}/{party}/{token_uid}?type=` keyed by `uid` — same
+  transport as 2.2.1. Split server-first (prod code ~844 > 800 cap). See LEARNINGS.
+- **Next:** client slice of #123 (`get/put/patch/authorize_token_2_1_1` + round-trip test; README ◑→☑), then #124, #125.
+
+---
+
 ## 2026-07-02 — M7 CDRs 2.1.1 wiring (issue #120, CDRs slice)
 
 - **Sync:** 0 open PRs — queue fully drained since run 21. Nothing to rescue.

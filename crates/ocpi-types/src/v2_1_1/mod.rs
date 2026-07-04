@@ -59,5 +59,5 @@ pub use sessions::{
     AuthMethod, CdrDimension, CdrDimensionType, ChargingPeriod, Session, SessionStatus,
 };
 pub use tariffs::{PriceComponent, Tariff, TariffDimensionType, TariffElement, TariffRestrictions};
-pub use tokens::{Token, TokenType};
+pub use tokens::{AuthorizationInfo, LocationReferences, Token, TokenType};
 pub use versions::{Endpoint, VersionDetails};
