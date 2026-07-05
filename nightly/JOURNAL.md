@@ -5,6 +5,28 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-05 — M7 2.1.1 Locations server receiver (issue #125)
+
+- **Issue:** #125 (owner-approved `nightly`) — the receiver half of the Locations
+  2.1.1 module; client sender shipped in #113/#118. **Branch:**
+  `claude/dazzling-maxwell-s23q19` (harness-designated). **Sync:** clean, no open PRs.
+- **Shipped (`ocpi-server`, +765):** `Locations2111Handler` trait +
+  `Locations2111Config` (store keyed `"{cc}/{party}/{loc}"`, nested EVSE/Connector
+  upsert + RFC 7396 merge-patch, reusing generic `apply_merge_patch`/`upsert_by`) +
+  `http::locations_2_1_1_router` (3 routes × GET/PUT/PATCH, reusing generic
+  `write_result`/`location_not_found`) + 3 spec-fixture tests. README matrix ◑→☑.
+- **CI (local):** `fmt` ✅ `clippy -D warnings` ✅ `test` ✅ (111 server tests, +3).
+  `cargo deny` absent in runner — no dep change, CI no-op.
+- **SPEC TRAP AVOIDED:** issue said the receiver path is "flat (no cc/party)". The
+  real spec (`mod_locations.md` §2.2 eMSP Interface) **keeps**
+  `{cc}/{party}/{location_id}[...]` for the *Receiver*; the flat path is the *Sender*
+  (CPO) interface. Same trap flagged for Sessions/CDRs/Tariffs/Tokens; corrected on
+  the issue.
+- **Next:** #124 (2.1.1 Commands, last ◑ for M7) — client+receiver+`response_url`
+  callback, likely a sender/receiver split to stay <800.
+
+---
+
 ## 2026-07-04 (run B) — STALE-DATA TRAP: no-op night, corrected the record
 
 - **What happened.** This run started against a **stale `origin/main`**: the

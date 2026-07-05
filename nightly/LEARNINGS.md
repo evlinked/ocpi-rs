@@ -106,6 +106,16 @@ cycle. Keep entries short and specific. Prune contradictions.
   Token `uid` **not** `auth_id`; sender `GET /tokens` + `POST .../authorize`. 2.1.1
   `LocationReferences` keeps `connector_ids`; `AuthorizationInfo` omits `token`/
   `authorization_reference`. Issue's "flat/`auth_id`" is the recurring trap.
+- **2.1.1 Locations RECEIVER = 2.2.1 transport (spec §2.2 eMSP Interface).** Receiver
+  keeps `/locations/{cc}/{party}/{location_id}[/{evse_uid}[/{connector_id}]]` (client-
+  owned push), GET/PUT/PATCH × 3 levels. The flat `/locations/{location_id}/...` is
+  the **Sender** (CPO) path — #125 conflated them. Object delta: required `type`, **no**
+  `country_code`/`party_id` on the object (from URL → `put` takes them as args),
+  singular `Connector.tariff_id`. Reuse generic `apply_merge_patch`/`upsert_by`/
+  `write_result`/`location_not_found`.
+- **Doc-compression is a cheap size lever.** Only `missing_docs` is enforced (not
+  `clippy::missing_errors_doc`), so a public item needs one `///` line; dropping the
+  `# Errors` blocks (~4 lines/method) pulled #125 from 827 → 765, under the 800 cap.
 - **Before re-delivering old type work, grep `main` for the types first.** M4/M5/M6 added
   `TokenType`, `ConnectorType`, `ConnectorFormat`, `PowerType` to `v2_2_1.rs` ahead of the
   Locations module (Sessions/CDRs/Tokens referenced them). Re-applying an older Locations
