@@ -5,6 +5,37 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-04 (run B) — STALE-DATA TRAP: no-op night, corrected the record
+
+- **What happened.** This run started against a **stale `origin/main`**: the
+  initial `git fetch origin main` returned `4f2a916`, and the GitHub MCP
+  `list_pull_requests` / `pull_request_read` snapshots showed #119/#121/#131/#132
+  as *open* and the queue as over-cap. Acting on that, I re-delivered the 2.1.1
+  Credentials fetch-back as PR #139 and posted "superseded / rescue" comments on
+  #121/#131/#132.
+- **Ground truth (revealed by a later `git fetch`).** `origin/main` was actually
+  at `856042d`, **9 commits ahead**: #121 (fetch-back, `2eca92b`), #131 (quinn
+  audit fix, `8a41b53`), #119, #133, and the whole M7 wiring wave — #134 Sessions,
+  #135 Tariffs (the re-delivery of rotted #132), #136 CDRs, #137/#138 Tokens — were
+  **already merged**. So **#139 was 100% redundant** (identical 576-line delta to
+  the already-merged #121), and my comments/closes on #121/#131/#132 landed on
+  already-merged or already-superseded PRs.
+- **Correction taken.** Repurposed the branch: merged current `main` (`-X theirs`)
+  so the redundant code dropped and the branch tree equals `main`; #139 now carries
+  **only this JOURNAL entry + the LEARNINGS lesson**. Closed #139's feature intent,
+  posted corrections on #121/#131, and closed #132 as superseded by #135. No feature
+  code shipped — correctly, since every task I "picked" was already done.
+- **Root cause + fix →** see the new LEARNINGS entry: **reconcile against
+  `git log origin/main` before trusting any MCP PR/issue snapshot or a single
+  early `git fetch`** — both the git proxy and the MCP API in this runner can lag by
+  many commits at session start and only catch up mid-run.
+- **Next (real remaining M7 work, verified against `856042d`).** 2.1.1 matrix has
+  only **Locations `◑`** (receiver router, #125) and **Commands `◑`** (wiring, #124)
+  left; everything else is `☑`. Pick #124 or #125 next — but **re-fetch `main` and
+  diff the crates against it first** to confirm they're genuinely unstarted.
+
+---
+
 ## 2026-07-04 — M7 Tokens 2.1.1 client slice (issue #123) — completes module
 
 - **Sync:** 0 open PRs. **Groom:** M7 has 3 `nightly` issues (#123/#124/#125) —
