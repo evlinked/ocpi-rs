@@ -52,6 +52,15 @@ use ocpi_types::v2_1_1::{
     AuthorizationInfo as AuthorizationInfo2111, LocationReferences as LocationReferences2111,
     Token as Token2111, TokenType as TokenType2111,
 };
+// The OCPI 2.1.1 Commands surface — four command types (no `CANCEL_RESERVATION`),
+// a full-`Token` `StartSession`, and a single `CommandResponse` used for both the
+// synchronous ack and the asynchronous callback — aliased to keep the 2.2.1 names
+// above unqualified. See `crate::OcpiClient::start_session_2_1_1` and friends.
+use ocpi_types::v2_1_1::{
+    CommandResponse as CommandResponse2111, CommandType as CommandType2111,
+    ReserveNow as ReserveNow2111, StartSession as StartSession2111, StopSession as StopSession2111,
+    UnlockConnector as UnlockConnector2111,
+};
 use url::Url;
 
 fn token_type_str(t: TokenType) -> &'static str {
@@ -2306,6 +2315,131 @@ impl OcpiClient {
         &self,
         response_url: &str,
         result: CommandResult,
+    ) -> Result<(), ClientError> {
+        let parsed = url::Url::parse(response_url)?;
+        self.http
+            .post(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(&result)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    // ── Commands (OCPI 2.1.1) ──────────────────────────────────────────────────
+
+    /// POST an **OCPI 2.1.1** command body to a CPO's commands endpoint and
+    /// return the synchronous [`CommandResponse2111`] acknowledgment.
+    ///
+    /// Mirrors [`OcpiClient::post_command`]; only the payload/response are the
+    /// 2.1.1 shape (a single [`ocpi_types::v2_1_1::CommandResponse`] carries the
+    /// result). The command-type path segment (e.g. `/START_SESSION`) is
+    /// appended automatically.
+    async fn post_command_2_1_1<B: ocpi_types::serde::Serialize>(
+        &self,
+        commands_url: &str,
+        command_type: CommandType2111,
+        body: &B,
+    ) -> Result<CommandResponse2111, ClientError> {
+        let type_str = ocpi_types::serde_json::to_value(command_type)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let url = format!("{}/{}", commands_url.trim_end_matches('/'), type_str);
+        let parsed = url::Url::parse(&url)?;
+        let response = self
+            .http
+            .post(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(body)
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<CommandResponse2111> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Send an **OCPI 2.1.1** `RESERVE_NOW` command to a CPO's commands endpoint.
+    ///
+    /// `commands_url` is the absolute base URL (e.g.
+    /// `https://cpo.example/ocpi/2.1.1/commands`). The `/RESERVE_NOW` segment is
+    /// appended automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the response carries no data.
+    pub async fn reserve_now_2_1_1(
+        &self,
+        commands_url: &str,
+        cmd: ReserveNow2111,
+    ) -> Result<CommandResponse2111, ClientError> {
+        self.post_command_2_1_1(commands_url, CommandType2111::ReserveNow, &cmd)
+            .await
+    }
+
+    /// Send an **OCPI 2.1.1** `START_SESSION` command to a CPO's commands
+    /// endpoint. The 2.1.1 [`ocpi_types::v2_1_1::StartSession`] carries the full
+    /// [`ocpi_types::v2_1_1::Token`] object (not a token reference).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the response carries no data.
+    pub async fn start_session_2_1_1(
+        &self,
+        commands_url: &str,
+        cmd: StartSession2111,
+    ) -> Result<CommandResponse2111, ClientError> {
+        self.post_command_2_1_1(commands_url, CommandType2111::StartSession, &cmd)
+            .await
+    }
+
+    /// Send an **OCPI 2.1.1** `STOP_SESSION` command to a CPO's commands endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the response carries no data.
+    pub async fn stop_session_2_1_1(
+        &self,
+        commands_url: &str,
+        cmd: StopSession2111,
+    ) -> Result<CommandResponse2111, ClientError> {
+        self.post_command_2_1_1(commands_url, CommandType2111::StopSession, &cmd)
+            .await
+    }
+
+    /// Send an **OCPI 2.1.1** `UNLOCK_CONNECTOR` command to a CPO's commands
+    /// endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the response carries no data.
+    pub async fn unlock_connector_2_1_1(
+        &self,
+        commands_url: &str,
+        cmd: UnlockConnector2111,
+    ) -> Result<CommandResponse2111, ClientError> {
+        self.post_command_2_1_1(commands_url, CommandType2111::UnlockConnector, &cmd)
+            .await
+    }
+
+    /// POST an **OCPI 2.1.1** async [`CommandResponse2111`] to the eMSP's
+    /// `response_url` (the asynchronous callback).
+    ///
+    /// This is the second phase of the 2.1.1 Commands flow: after the CPO has
+    /// forwarded the command to the Charge Point, it POSTs the final
+    /// [`ocpi_types::v2_1_1::CommandResponse`] back to the `response_url` that the
+    /// eMSP included in the original command body. Unlike 2.2.1 — which POSTs a
+    /// distinct `CommandResult` — 2.1.1 reuses the same `CommandResponse` object
+    /// for both the synchronous ack and this async result (§13.2.2.1).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn post_command_result_2_1_1(
+        &self,
+        response_url: &str,
+        result: CommandResponse2111,
     ) -> Result<(), ClientError> {
         let parsed = url::Url::parse(response_url)?;
         self.http

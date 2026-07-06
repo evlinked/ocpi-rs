@@ -5,6 +5,48 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-06 — M7 2.1.1 Commands end-to-end (issue #124)
+
+- **Issue:** #124 (owner-approved `nightly`) — the last ◑ cell for M7: wire the
+  2.1.1 Commands module (client sender + server receiver + async `response_url`
+  callback) on top of the #93 types. **Branch:** `nightly/2026-07-06-issue-124`
+  off latest `main` (b55d9de). **Sync:** 5 open PRs, all Dependabot CI bumps
+  (#143–#147); zero open nightly PRs, nothing to fix.
+- **Shipped (+531):**
+  - `ocpi-client` (+134): `reserve_now/start_session/stop_session/unlock_connector_2_1_1`
+    (each returns the sync `CommandResponse2111`) + `post_command_result_2_1_1`
+    (async callback POSTs a `CommandResponse` to the `response_url`), driven by a
+    private `post_command_2_1_1` helper mirroring the 2.2.1 `post_command`.
+  - `ocpi-server` (+399): `Commands2111Handler` trait + `Commands2111Config`
+    placeholder (`NOT_SUPPORTED`) + `http::commands_2_1_1_router` (4 command POSTs
+    + `/{command_type}/result`) + a 4-test nested module (placeholder ack, async
+    callback, serde shape, router construct).
+  - README matrix Commands 2.1.1 ◑→☑ + M7 prose.
+- **CI (local):** `fmt` ✅ `clippy -D warnings` ✅ `test` ✅ (server 115, +4;
+  client unchanged) `cargo doc -D warnings` ✅ (CI enforces it — verified locally).
+  `cargo deny` absent in runner; **no Cargo.toml change**, so CI dep-gate is a no-op
+  and the PR stays auto-mergeable (no `needs-human`).
+- **Spec fidelity:** 2.1.1 Commands has **no `CANCEL_RESERVATION`** (2.2 addition) —
+  omitted, not stubbed. `START_SESSION` carries the **full `Token` object**. The
+  async result reuses the **single `CommandResponse`** (no 2.2 `CommandResult`
+  split); the router's result-callback body is `CommandResponse2111`, and an
+  unknown `{command_type}` path segment → `2001 InvalidParameters` / HTTP 400,
+  matching the 2.2.1 handler.
+- **Path shape:** Commands is a verb-style RPC keyed by `response_url`, so the
+  receiver path is **flat** (`/commands/{command}`) in both 2.1.1 and 2.2.1 — no
+  `{cc}/{party}` segments. (Contrast the #125 trap: that was a client-owned *object*
+  push, which keeps the segments.) No trap here.
+- **Size:** 531 changed lines — a hair over the ~500 soft cap, but a single
+  indivisible module wiring (client+receiver+callback+tests are the issue's
+  acceptance set); splitting would fragment one coherent slice. Bulk is doc
+  comments + the mirrored placeholder boilerplate.
+- **Next:** #141 (2.1.1 e2e smoke test, P2) is the natural M7 capstone now that all
+  functional modules are wired — but it introduces `tokio`/`tower`/`serde_json`
+  dev-deps (`needs-human`). It's owner-filed but **not yet `nightly`-labeled**;
+  ask the owner to approve #141 (and #142, the 2.1.1 sender `GET /locations`).
+
+---
+
 ## 2026-07-05 — M7 2.1.1 Locations server receiver (issue #125)
 
 - **Issue:** #125 (owner-approved `nightly`) — the receiver half of the Locations
