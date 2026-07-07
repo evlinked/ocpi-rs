@@ -192,7 +192,12 @@ cycle. Keep entries short and specific. Prune contradictions.
   segments. Caught for Tariffs (#132) and Sessions (#120). When wiring any
   2.1.1 client-owned module, mirror the 2.2.1 router path; only the object
   *shape* differs. (Server-owned modules like CDRs `POST /cdrs` + `GET
-  /cdrs/{id}` stay flat — the push is a POST that the receiver names.)
+  /cdrs/{id}` stay flat — the push is a POST that the receiver names. **Commands**
+  is flat too but for a different reason: it's a verb-style RPC — `POST
+  /commands/{command}` keyed by the Sender-supplied `response_url`, not an object
+  with an owner, so there are never `{cc}/{party}` segments in *any* version.
+  Rule of thumb: `{cc}/{party}` segments ⇔ *client-owned object*; server-owned
+  objects and verb-RPCs are flat. Confirmed for 2.1.1 Commands (#124).)
 - **Reading the 2.1.1 spec: it's a PDF, not asciidoc.** `specs/ocpi/2.1.1/`
   holds only `OCPI_2.1.1.pdf`. In the remote runner `pdftotext`/`poppler` are
   absent and `pypdf` import panics (cryptography/pyo3). Working extraction is a
