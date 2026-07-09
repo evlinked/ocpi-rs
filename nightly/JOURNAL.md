@@ -5,6 +5,36 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-09 — Empty approval queue (night 2): confirmed blocked, re-notified owner
+
+- **Sync (ground-truth ritual):** `git fetch origin main` ×2 → head unchanged at
+  `18111b9` (PR #150, the 2026-07-07 groom entry). **No feature merges since the
+  last run.** Open PRs: still only the 5 Dependabot CI bumps (#143–#147,
+  `type:ci` / `needs-review`) — guarded `.github/` path, the owner's to review,
+  never the routine's to merge. **Zero open nightly PRs** → nothing to fix.
+- **Blocker (unchanged):** `list_issues labels=[nightly] → 0`. The approval queue
+  is **still empty** — this is the second consecutive night blocked. The only
+  open issues remain owner-*filed* but *unapproved*: **#141** (2.1.1 e2e smoke
+  test, P2), **#142** (2.1.1 Locations sender route, P3), **#149** (2.2
+  back-coverage foundation, P3), and **#64** (2.2.1 routing-headers *question*,
+  open since 2026-06-17 — needs an ergonomics decision, Option A vs B). Trust
+  rule is non-negotiable: the routine never self-approves → **nothing
+  implementable tonight.**
+- **Verified, not assumed:** re-checked M7 state from ground truth (README matrix
+  + `origin/main` head), not memory. 2.1.1 surface still functionally complete;
+  no `v2_2`/`v2_0` module yet; M7 not complete (2.2/2.0 back-coverage unstarted)
+  → no README milestone flip due. The 2026-07-07 slate is still accurate, so I
+  did **not** re-file duplicate issues (that would be noise).
+- **Action:** kept the audit trail (this entry) and **re-notified the owner** —
+  the empty queue is the one blocker only they can clear (one `nightly` label on
+  #141/#142/#149). Recommend **#141** first (e2e smoke test locks in the 2.1.1
+  transport surface before the 2.2 track opens on top of it).
+- **CI:** n/a (docs-only run; no code touched).
+- **Next:** owner adds `nightly` to #141 (or #142/#149) to unblock the next build
+  night; and/or answers #64's Option A/B ergonomics question.
+
+---
+
 ## 2026-07-07 — Groom night: empty approval queue, seeded 2.2 track (no impl)
 
 - **Sync:** `git fetch origin main` ×2 → head `e051700` (issue #124 / PR #148
