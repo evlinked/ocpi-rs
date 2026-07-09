@@ -5,6 +5,47 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-07 — Groom night: empty approval queue, seeded 2.2 track (no impl)
+
+- **Sync:** `git fetch origin main` ×2 → head `e051700` (issue #124 / PR #148
+  already merged; journal's "PR opened this run" was that). Open PRs: only 5
+  Dependabot CI bumps (#143–#147) — guarded-path, not the routine's job, and I
+  never merge bot/human PRs. **Zero open nightly PRs** → nothing to fix.
+- **Blocker of the night:** **no open issue carries the `nightly` label.**
+  `list_issues labels=[nightly] → 0`. The only open issues are #141 (2.1.1 e2e
+  smoke test, P2), #142 (2.1.1 Locations sender route, P3) and #64 (a 2.2.1
+  routing-headers *question*) — all owner-*filed* but **unapproved**. Trust rule
+  is non-negotiable: the routine never self-approves, so **nothing was
+  implementable tonight.** (The token authenticates as the owner, but that does
+  not grant the routine approval authority — the `nightly` label is the gate.)
+- **Ground truth on M7:** the 2.1.1 surface is **functionally complete** — the
+  README matrix shows all 8 modules ☑ for 2.1.1, and `v2_1_1/` covers
+  Versions/Credentials/Locations/Sessions/CDRs/Tariffs/Tokens/Commands. The
+  un-scoped remainder of M7 is the roadmap's `+ 2.2 / 2.0 back-coverage`: **no
+  `v2_2` or `v2_0` module exists** in `ocpi-types` yet.
+- **Groom (the deliverable):** M7 has <3 owner-approved issues (it has 0), so I
+  seeded the next chunk. Filed **#149** — "OCPI 2.2 back-coverage foundation
+  (`v2_2` module + version/endpoint + aliasing strategy)". Key spec insight
+  captured in the issue: 2.2 ≈ 2.2.1 (2.2.1 is a *patch*; per
+  `2.2.1/version_history.asciidoc` it only adds `CdrToken` cc/party,
+  `StartSession.connector_id`, a few `PowerType`/`ConnectorType` values,
+  `home_charging_compensation`, SignedData fixes). So `v2_2` should
+  **alias-by-default, override-only-the-deltas** — re-export the identical 2.2.1
+  types and version only the handful that differ. That keeps the whole 2.2 track
+  thin. Labeled `v2.2 / mod:versions / type:types / P3`, pending owner approval.
+- **Approval slate now ready for the owner:** #149 (2.2 foundation), #141 (2.1.1
+  e2e), #142 (2.1.1 Locations sender). Adding `nightly` to any unblocks the next
+  build night.
+- **CI:** n/a (docs-only run; no code touched).
+- **Next:** owner approves one of #149/#141/#142. Recommend **#141** first — an
+  e2e round-trip is the true 2.1.1 capstone and would catch transport-level
+  regressions across all the piecemeal wiring; it needs `needs-human` for its
+  test dev-deps (`tokio`/`tower`/`serde_json`), which is expected and sanctioned
+  for the e2e issue. If a pure auto-mergeable slice is preferred, **#149** is the
+  clean foundational start of the 2.2 track.
+
+---
+
 ## 2026-07-06 — M7 2.1.1 Commands end-to-end (issue #124)
 
 - **Issue:** #124 (owner-approved `nightly`) — the last ◑ cell for M7: wire the

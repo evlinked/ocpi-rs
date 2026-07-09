@@ -6,6 +6,19 @@ cycle. Keep entries short and specific. Prune contradictions.
 
 ## Workflow & PR hygiene
 
+- **An empty `nightly`-label queue means the night's job is grooming, not
+  implementing — never self-approve.** The token authenticates as the owner
+  (`get_me → duyhuynh-vn`), but that does NOT grant the routine approval
+  authority; the `nightly` label is a human gate and the routine adding it to its
+  own proposed issue would defeat the whole trust model. When
+  `list_issues labels=[nightly]` returns 0, the correct run is: confirm Sync is
+  clean, verify the earliest milestone's real state from ground truth (README
+  matrix + the actual crate modules, not memory), file/refresh a well-scoped
+  spec-grounded issue slate for the owner to approve, record it, and **notify the
+  owner that the queue is empty** (that's the one thing only they can unblock).
+  Do NOT invent an unapproved implementation to have "something to ship."
+  (Confirmed 2026-07-07: 2.1.1 done, only #141/#142 pending unapproved; filed
+  #149 to open the 2.2 track.)
 - **`git log origin/main` is the ONLY ground truth — the git proxy AND the GitHub
   MCP API both lag at session start.** Run 2026-07-04(B) burned a whole night on
   redundant work: the first `git fetch origin main` returned `4f2a916` and MCP
