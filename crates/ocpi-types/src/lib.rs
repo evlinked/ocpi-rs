@@ -14,7 +14,7 @@
 //! - [`status`] — the canonical OCPI [`OcpiStatusCode`] set.
 //! - [`common`] — common data types shared across modules.
 //! - [`version`] — version negotiation primitives.
-//! - `v2_1_1` / `v2_2_1` / `v2_3_0` — version-namespaced module models,
+//! - `v2_1_1` / `v2_2` / `v2_2_1` / `v2_3_0` — version-namespaced module models,
 //!   populated incrementally per the roadmap milestones.
 //!
 //! ## Layout (continued)
@@ -40,6 +40,7 @@ pub mod transport;
 pub mod version;
 
 pub mod v2_1_1;
+pub mod v2_2;
 pub mod v2_2_1;
 pub mod v2_3_0;
 
