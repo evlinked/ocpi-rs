@@ -5,6 +5,53 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-10 (B) — Owner session: queue unblocked, label gate removed, #141 shipped
+
+- **Owner-directed run** (live session, not the scheduled routine). Three
+  directives executed:
+  1. **Dependabot PRs reviewed + merged** (owner's explicit ask): #143
+     (install-action 2.82.6→2.82.9), #144/#146/#147 (codeql-action
+     4.36.2→4.36.3 × analyze/init/autobuild), #145 (upload-sarif 4.36.3).
+     Each diff verified as a pure pinned-SHA bump before squash-merging;
+     the three same-file codeql bumps merged sequentially without conflicts.
+  2. **Groom:** `nightly` label added to #141/#142/#149 and follow-up #153
+     filed (2.2 per-module wire deltas, depends on #149). Queue: 4 issues.
+  3. **Trust-rule change (owner directive): the `nightly` label gate is
+     removed.** PLAYBOOK.md Trust rule rewritten; LEARNINGS.md empty-queue
+     entry marked superseded. Owner-filed issues are now implementable
+     directly; the third-party rule (triage-only, never implement) stands.
+     ⚠️ The *scheduled routine's own prompt* still states the label rule —
+     the owner should update the routine configuration to match, or future
+     scheduled runs will follow the stricter prompt over the playbook.
+- **Issue:** #141 — 2.1.1 e2e smoke test. **Re-scoped from ground truth:**
+  per-module client↔router HTTP round-trips already existed for Sessions/
+  CDRs/Tariffs/Tokens/Credentials, so the issue's remaining value was the
+  uncovered surfaces: live 2.1.1 version negotiation (role-less catalogue),
+  the Locations 2.1.1 receiver router driven by the real client (the old
+  client test predates the router — hand-rolled server), and Commands over
+  HTTP (zero client↔router coverage). Also: **no Cargo.toml change needed** —
+  the issue's "expect dev-deps" note was stale; `axum`/`tokio net` were
+  already in ocpi-client dev-deps.
+- **What shipped:** `crates/ocpi-client/tests/m7_e2e_2_1_1.rs` — ONE axum app
+  merging `versions_router` (legacy 2.1.1 catalogue) + `locations_2_1_1_router`
+  + `commands_2_1_1_router`; client negotiates 2.2.1→2.1.1 fallback, fetches
+  role-less details via `LegacyVersionFetcher`, discovers endpoints from the
+  catalogue (no hard-coded URLs past bootstrap), GETs Location/EVSE/Connector
+  through the real receiver router (asserting singular `tariff_id`), asserts
+  the 2003/NotFound failure path, START_SESSION sync ack + async result
+  callback route.
+- **CI:** `fmt` ✅ `clippy -D warnings` ✅ `test --workspace --all-features` ✅
+  (423 passed / 0 failed). `cargo deny`: not installed in this container, but
+  the diff has zero dependency changes — CI enforces it on the PR. No new deps.
+- **What worked:** grounding the issue scope against existing tests before
+  coding — half the issue's stated scope was already covered; the slice
+  shrank to what's genuinely untested.
+- **Next:** #142 (2.1.1 Locations sender list route) or #149 (2.2 foundation).
+  #153 stays blocked until #149 lands. #64 still awaits the owner's
+  Option A/B call.
+
+---
+
 ## 2026-07-10 — Empty approval queue (night 3): still blocked, escalated to owner
 
 - **Sync (ground-truth ritual):** `git fetch origin main` ×2 → head unchanged at
