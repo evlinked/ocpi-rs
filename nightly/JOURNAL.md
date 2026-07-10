@@ -5,6 +5,34 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-10 — #142: 2.1.1 Locations **sender** router (CPO catalogue GET)
+
+- **Sync:** `git fetch origin main` → head `9d447ce` (PR #151). Open PRs: **#152**
+  (2.1.1 e2e smoke test, `ready-for-review`, `mergeable_state: clean` — owner's
+  to merge, not the routine's). ≤2 open nightly PRs → free to build. Owner-directed
+  session (explicit prompt) — picked an owner-filed M7 issue directly.
+- **Pick:** **#142** — the last open 2.1.1 Locations gap. PR #140/#125 shipped the
+  eMSP *receiver* (`{cc}/{party}/{location_id}[...]`) but deliberately omitted the
+  CPO *sender* `GET /locations` list. Finishing the sender side completes the 2.1.1
+  Locations module symmetry (2.1.1 first, before the 2.2 track in #149/#153).
+- **Implemented:** `Locations2111Config::{list,get_by_id,get_evse_by_id,
+  get_connector_by_id}` + a **separate** `http::locations_2_1_1_sender_router`
+  serving the flat §2.1 CPO-Interface path (paginated `GET /locations` with
+  `X-Total-Count`/`X-Limit`/`Link`, plus flat single-object getters). Kept it a
+  distinct router from the receiver so its 3-segment connector path never collides
+  with the receiver's 3-segment owner path (a CPO mounts one, an eMSP the other —
+  never the same server path). Mirrors the 2.2.1 `locations_list`.
+- **Tests:** inline `Config` tests (no HTTP dev-deps, per the LEARNINGS pattern):
+  list filter+pagination ordering, and flat getters at all three object levels
+  incl. miss paths. `fmt` ✅, `clippy --workspace --all-targets --all-features -D
+  warnings` ✅, `cargo test --workspace --all-features` ✅ (ocpi-server 117 passed).
+  No `Cargo.toml` change → no dep review, auto-mergeable.
+- **Next:** 2.1.1 is now complete across all modules incl. Locations sender;
+  the M7 remainder is the 2.2 back-coverage track — approve/build **#149**
+  (`v2_2` foundation) then **#153** (per-module 2.2 wire deltas).
+
+---
+
 ## 2026-07-10 (B) — Owner session: queue unblocked, label gate removed, #141 shipped
 
 - **Owner-directed run** (live session, not the scheduled routine). Three
