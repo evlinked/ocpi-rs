@@ -5,6 +5,39 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-10 — Empty approval queue (night 3): still blocked, escalated to owner
+
+- **Sync (ground-truth ritual):** `git fetch origin main` ×2 → head unchanged at
+  `18111b9` (PR #150). **No feature merges since the 2026-07-07 groom.** Open PRs:
+  the 5 Dependabot CI bumps (#143–#147, guarded `.github/` path, owner's to
+  review) **plus my own night-2 docs PR #151** (`ready-for-review`,
+  `mergeable_state: clean`) — still open, awaiting the owner. That is **1 open
+  nightly PR** (under the ≤2 cap); its CI is clean, so nothing to fix.
+- **Blocker (unchanged, 3rd night):** `list_issues labels=[nightly] → 0`. The
+  approval queue is **still empty**. Owner-*filed* but *unapproved* slate is
+  intact: **#141** (2.1.1 e2e smoke test, P2), **#142** (2.1.1 Locations sender
+  route, P3), **#149** (2.2 back-coverage foundation, P3), **#64** (2.2.1
+  routing-headers *question*, open since 2026-06-17). Trust rule is
+  non-negotiable — the routine never self-approves → **nothing implementable.**
+- **Groom check:** M7's earliest-incomplete slate already holds ≥3 well-scoped
+  approvable issues (#141/#142/#149), so the "fewer than 3" trigger does **not**
+  fire — re-filing would be duplicate noise. Verified from ground truth (not
+  memory): `ocpi-types/src/` still has only `v2_1_1/`, `v2_2_1.rs`, `v2_3_0.rs`
+  (no `v2_2`/`v2_0`), so #149's premise holds and M7 is not complete → no README
+  flip due. Not a Sunday → no harder-groom mandate.
+- **Action:** to avoid stacking a third near-identical docs PR (and a JOURNAL
+  merge conflict against the unmerged #151), this entry is committed **on top of
+  #151's branch content**, so this PR carries a continuous 07-09 → 07-10 record.
+  Recommend the owner **merge this PR and close #151** as superseded. Also
+  **escalated to the owner** via notification — 3 nights idle is a standing
+  bottleneck only they can clear with one `nightly` label.
+- **CI:** n/a (docs-only run; no code touched).
+- **Next:** owner adds `nightly` to **#141** (recommended first — locks in the
+  2.1.1 transport surface before the 2.2 track builds on it), or #142/#149;
+  and/or answers #64's Option A/B ergonomics question.
+
+---
+
 ## 2026-07-09 — Empty approval queue (night 2): confirmed blocked, re-notified owner
 
 - **Sync (ground-truth ritual):** `git fetch origin main` ×2 → head unchanged at
