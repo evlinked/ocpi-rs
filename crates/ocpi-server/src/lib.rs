@@ -4452,6 +4452,78 @@ impl Locations2111Config {
         *connector = apply_merge_patch(connector, partial)?;
         Ok(())
     }
+
+    /// Return a filtered, paginated slice of the stored 2.1.1 Locations — the
+    /// CPO **sender** list (`GET /locations`).
+    ///
+    /// Filters by `last_updated >= date_from` and (if provided)
+    /// `last_updated < date_to`, sorted by `last_updated`. Mirrors
+    /// [`LocationsConfig::list`]; the 2.1.1 store keys objects by their owner
+    /// segments, but the sender list is flat (a CPO exposing its own
+    /// catalogue), so the key is ignored here.
+    ///
+    /// Returns `(page_items, total_matching_count)`.
+    #[must_use]
+    pub fn list(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Location2111>, u32) {
+        let map = self.locations.read().expect("lock not poisoned");
+        let mut filtered: Vec<&Location2111> = map
+            .values()
+            .filter(|l| l.last_updated >= date_from && date_to.is_none_or(|dt| l.last_updated < dt))
+            .collect();
+        filtered.sort_by_key(|l| l.last_updated);
+        let total = filtered.len() as u32;
+        let page: Vec<Location2111> = filtered
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        (page, total)
+    }
+
+    /// Look up a Location by its `id` alone — the 2.1.1 **sender** flat path
+    /// (`GET /locations/{location_id}`) carries no owner segments, so a CPO
+    /// serving its own catalogue addresses objects by bare id. Returns the
+    /// first match.
+    #[must_use]
+    pub fn get_by_id(&self, location_id: &str) -> Option<Location2111> {
+        self.locations
+            .read()
+            .expect("lock not poisoned")
+            .values()
+            .find(|l| l.id.as_str() == location_id)
+            .cloned()
+    }
+
+    /// Flat-path (`GET /locations/{location_id}/{evse_uid}`) EVSE getter.
+    #[must_use]
+    pub fn get_evse_by_id(&self, location_id: &str, evse_uid: &str) -> Option<Evse2111> {
+        self.get_by_id(location_id)?
+            .evses
+            .into_iter()
+            .find(|e| e.uid.as_str() == evse_uid)
+    }
+
+    /// Flat-path (`GET /locations/{location_id}/{evse_uid}/{connector_id}`)
+    /// Connector getter.
+    #[must_use]
+    pub fn get_connector_by_id(
+        &self,
+        location_id: &str,
+        evse_uid: &str,
+        connector_id: &str,
+    ) -> Option<Connector2111> {
+        self.get_evse_by_id(location_id, evse_uid)?
+            .connectors
+            .into_iter()
+            .find(|c| c.id.as_str() == connector_id)
+    }
 }
 
 impl Default for Locations2111Config {
@@ -7123,6 +7195,113 @@ pub mod http {
         )
     }
 
+    // ── Locations sender (OCPI 2.1.1) ──────────────────────────────────────────
+
+    /// Build an axum router for the OCPI **2.1.1** Locations module **sender**
+    /// interface (CPO side).
+    ///
+    /// Exposes the CPO's own Location catalogue on the **flat** sender path
+    /// (§2.1 CPO Interface) — no `{country_code}/{party_id}` owner segments,
+    /// since the CPO owns everything it serves here:
+    /// - `GET /locations` — paginated list (`X-Total-Count`/`X-Limit`/`Link`)
+    /// - `GET /locations/{location_id}`
+    /// - `GET /locations/{location_id}/{evse_uid}`
+    /// - `GET /locations/{location_id}/{evse_uid}/{connector_id}`
+    ///
+    /// This mirrors the 2.2.1 sender `GET /locations` wired into
+    /// [`locations_router`] and pairs with the client
+    /// `OcpiClient::{get_locations,get_location,get_evse,get_connector}_2_1_1`.
+    /// It is a **separate** router from the receiver [`locations_2_1_1_router`]
+    /// (whose 3-segment owner path would otherwise collide with this router's
+    /// 3-segment connector path) — a CPO mounts this on its sender interface,
+    /// an eMSP mounts the receiver on its eMSP interface; they are never the
+    /// same server path.
+    ///
+    /// Spec: OCPI 2.1.1 — *Locations* module, §2.1 CPO (Sender) Interface.
+    pub fn locations_2_1_1_sender_router(config: Arc<Locations2111Config>) -> Router {
+        Router::new()
+            .route("/locations", get(locations_2_1_1_list))
+            .route("/locations/{location_id}", get(location_2_1_1_sender_get))
+            .route(
+                "/locations/{location_id}/{evse_uid}",
+                get(evse_2_1_1_sender_get),
+            )
+            .route(
+                "/locations/{location_id}/{evse_uid}/{connector_id}",
+                get(connector_2_1_1_sender_get),
+            )
+            .with_state(config)
+    }
+
+    async fn locations_2_1_1_list(
+        State(cfg): State<Arc<Locations2111Config>>,
+        Query(params): Query<PaginatedParams>,
+    ) -> Response {
+        use ocpi_types::chrono::TimeZone as _;
+        let date_from = params.date_from.unwrap_or_else(|| {
+            ocpi_types::Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .single()
+                .expect("epoch is valid")
+        });
+        let offset = params.offset.unwrap_or(0);
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
+
+        let (items, total) = cfg.list(date_from, params.date_to, offset, limit);
+        let page = OcpiPaged::new(items, offset, limit, total);
+        let next_offset = page.next_offset();
+        let body = page.into_response();
+
+        let mut response = Json(body).into_response();
+        let hdrs = response.headers_mut();
+        if let Ok(v) = total.to_string().parse() {
+            hdrs.insert("x-total-count", v);
+        }
+        if let Ok(v) = limit.to_string().parse() {
+            hdrs.insert("x-limit", v);
+        }
+        if let Some(next_off) = next_offset {
+            let link = format!("</locations?offset={next_off}&limit={limit}>; rel=\"next\"");
+            if let Ok(v) = link.parse() {
+                hdrs.insert("link", v);
+            }
+        }
+
+        response
+    }
+
+    async fn location_2_1_1_sender_get(
+        State(cfg): State<Arc<Locations2111Config>>,
+        Path(location_id): Path<String>,
+    ) -> Response {
+        match cfg.get_by_id(&location_id) {
+            Some(location) => Json(OcpiResponse::success(location)).into_response(),
+            None => location_not_found::<Location2111>(format!("no Location {location_id}")),
+        }
+    }
+
+    async fn evse_2_1_1_sender_get(
+        State(cfg): State<Arc<Locations2111Config>>,
+        Path((location_id, evse_uid)): Path<(String, String)>,
+    ) -> Response {
+        match cfg.get_evse_by_id(&location_id, &evse_uid) {
+            Some(evse) => Json(OcpiResponse::success(evse)).into_response(),
+            None => location_not_found::<Evse2111>(format!("no EVSE {evse_uid} in {location_id}")),
+        }
+    }
+
+    async fn connector_2_1_1_sender_get(
+        State(cfg): State<Arc<Locations2111Config>>,
+        Path((location_id, evse_uid, connector_id)): Path<(String, String, String)>,
+    ) -> Response {
+        match cfg.get_connector_by_id(&location_id, &evse_uid, &connector_id) {
+            Some(connector) => Json(OcpiResponse::success(connector)).into_response(),
+            None => location_not_found::<Connector2111>(format!(
+                "no Connector {connector_id} in {evse_uid}"
+            )),
+        }
+    }
+
     // ── Versions handler tests (#99) ───────────────────────────────────────────
     //
     // Drive the `version_details` axum handler directly (no live socket) to
@@ -8646,6 +8825,92 @@ mod tests {
         // Putting an EVSE into a missing Location is NotFound.
         let err = cfg.put_evse("BE", "BEC", "MISSING", evse).unwrap_err();
         assert!(matches!(err, ServerError::NotFound));
+    }
+
+    /// Build a minimal 2.1.1 Location with the given `id` / `last_updated`
+    /// for the sender-list tests (`GET /locations`, #142).
+    fn location_2_1_1_at(id: &str, last_updated: &str) -> ocpi_types::v2_1_1::Location {
+        ocpi_types::serde_json::from_value(ocpi_types::serde_json::json!({
+            "id": id,
+            "type": "ON_STREET",
+            "address": "F.Rooseveltlaan 3A",
+            "city": "Gent",
+            "postal_code": "9000",
+            "country": "BEL",
+            "coordinates": { "latitude": "51.047590", "longitude": "3.729940" },
+            "evses": [],
+            "last_updated": last_updated,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn locations_2_1_1_config_list_filters_and_paginates() {
+        let cfg = Locations2111Config::new();
+        cfg.put(
+            "BE",
+            "BEC",
+            "L1",
+            location_2_1_1_at("L1", "2020-01-01T00:00:00Z"),
+        );
+        cfg.put(
+            "BE",
+            "BEC",
+            "L2",
+            location_2_1_1_at("L2", "2021-01-01T00:00:00Z"),
+        );
+        cfg.put(
+            "BE",
+            "BEC",
+            "L3",
+            location_2_1_1_at("L3", "2022-01-01T00:00:00Z"),
+        );
+
+        // No filter: all three, sorted by last_updated.
+        let epoch = "1970-01-01T00:00:00Z".parse().unwrap();
+        let (all, total) = cfg.list(epoch, None, 0, 50);
+        assert_eq!(total, 3);
+        assert_eq!(
+            all.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["L1", "L2", "L3"]
+        );
+
+        // date_from excludes the oldest; page size caps the slice but total is
+        // the full filtered count.
+        let from = "2021-01-01T00:00:00Z".parse().unwrap();
+        let (page, total) = cfg.list(from, None, 0, 1);
+        assert_eq!(total, 2);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].id.as_str(), "L2");
+
+        // offset walks to the next page.
+        let (page, _) = cfg.list(from, None, 1, 1);
+        assert_eq!(page[0].id.as_str(), "L3");
+    }
+
+    #[test]
+    fn locations_2_1_1_config_flat_sender_getters() {
+        let cfg = Locations2111Config::new();
+        cfg.put("BE", "BEC", "LOC1", sample_location_2_1_1());
+
+        // Flat lookup by bare id (no owner segments) resolves all three levels.
+        assert_eq!(cfg.get_by_id("LOC1").unwrap().id.as_str(), "LOC1");
+        assert_eq!(
+            cfg.get_evse_by_id("LOC1", "3256").unwrap().uid.as_str(),
+            "3256"
+        );
+        assert_eq!(
+            cfg.get_connector_by_id("LOC1", "3256", "1")
+                .unwrap()
+                .id
+                .as_str(),
+            "1"
+        );
+
+        // Unknown ids at each level miss.
+        assert!(cfg.get_by_id("NOPE").is_none());
+        assert!(cfg.get_evse_by_id("LOC1", "9999").is_none());
+        assert!(cfg.get_connector_by_id("LOC1", "3256", "9").is_none());
     }
 
     // ── CommandsConfig tests ──────────────────────────────────────────────────
