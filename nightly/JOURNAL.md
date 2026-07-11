@@ -5,6 +5,114 @@ result, what worked, what to try next.
 
 ---
 
+## 2026-07-10 — #142: 2.1.1 Locations **sender** router (CPO catalogue GET)
+
+- **Sync:** `git fetch origin main` → head `9d447ce` (PR #151). Open PRs: **#152**
+  (2.1.1 e2e smoke test, `ready-for-review`, `mergeable_state: clean` — owner's
+  to merge, not the routine's). ≤2 open nightly PRs → free to build. Owner-directed
+  session (explicit prompt) — picked an owner-filed M7 issue directly.
+- **Pick:** **#142** — the last open 2.1.1 Locations gap. PR #140/#125 shipped the
+  eMSP *receiver* (`{cc}/{party}/{location_id}[...]`) but deliberately omitted the
+  CPO *sender* `GET /locations` list. Finishing the sender side completes the 2.1.1
+  Locations module symmetry (2.1.1 first, before the 2.2 track in #149/#153).
+- **Implemented:** `Locations2111Config::{list,get_by_id,get_evse_by_id,
+  get_connector_by_id}` + a **separate** `http::locations_2_1_1_sender_router`
+  serving the flat §2.1 CPO-Interface path (paginated `GET /locations` with
+  `X-Total-Count`/`X-Limit`/`Link`, plus flat single-object getters). Kept it a
+  distinct router from the receiver so its 3-segment connector path never collides
+  with the receiver's 3-segment owner path (a CPO mounts one, an eMSP the other —
+  never the same server path). Mirrors the 2.2.1 `locations_list`.
+- **Tests:** inline `Config` tests (no HTTP dev-deps, per the LEARNINGS pattern):
+  list filter+pagination ordering, and flat getters at all three object levels
+  incl. miss paths. `fmt` ✅, `clippy --workspace --all-targets --all-features -D
+  warnings` ✅, `cargo test --workspace --all-features` ✅ (ocpi-server 117 passed).
+  No `Cargo.toml` change → no dep review, auto-mergeable.
+- **Next:** 2.1.1 is now complete across all modules incl. Locations sender;
+  the M7 remainder is the 2.2 back-coverage track — approve/build **#149**
+  (`v2_2` foundation) then **#153** (per-module 2.2 wire deltas).
+
+---
+
+## 2026-07-10 (B) — Owner session: queue unblocked, label gate removed, #141 shipped
+
+- **Owner-directed run** (live session, not the scheduled routine). Three
+  directives executed:
+  1. **Dependabot PRs reviewed + merged** (owner's explicit ask): #143
+     (install-action 2.82.6→2.82.9), #144/#146/#147 (codeql-action
+     4.36.2→4.36.3 × analyze/init/autobuild), #145 (upload-sarif 4.36.3).
+     Each diff verified as a pure pinned-SHA bump before squash-merging;
+     the three same-file codeql bumps merged sequentially without conflicts.
+  2. **Groom:** `nightly` label added to #141/#142/#149 and follow-up #153
+     filed (2.2 per-module wire deltas, depends on #149). Queue: 4 issues.
+  3. **Trust-rule change (owner directive): the `nightly` label gate is
+     removed.** PLAYBOOK.md Trust rule rewritten; LEARNINGS.md empty-queue
+     entry marked superseded. Owner-filed issues are now implementable
+     directly; the third-party rule (triage-only, never implement) stands.
+     ⚠️ The *scheduled routine's own prompt* still states the label rule —
+     the owner should update the routine configuration to match, or future
+     scheduled runs will follow the stricter prompt over the playbook.
+- **Issue:** #141 — 2.1.1 e2e smoke test. **Re-scoped from ground truth:**
+  per-module client↔router HTTP round-trips already existed for Sessions/
+  CDRs/Tariffs/Tokens/Credentials, so the issue's remaining value was the
+  uncovered surfaces: live 2.1.1 version negotiation (role-less catalogue),
+  the Locations 2.1.1 receiver router driven by the real client (the old
+  client test predates the router — hand-rolled server), and Commands over
+  HTTP (zero client↔router coverage). Also: **no Cargo.toml change needed** —
+  the issue's "expect dev-deps" note was stale; `axum`/`tokio net` were
+  already in ocpi-client dev-deps.
+- **What shipped:** `crates/ocpi-client/tests/m7_e2e_2_1_1.rs` — ONE axum app
+  merging `versions_router` (legacy 2.1.1 catalogue) + `locations_2_1_1_router`
+  + `commands_2_1_1_router`; client negotiates 2.2.1→2.1.1 fallback, fetches
+  role-less details via `LegacyVersionFetcher`, discovers endpoints from the
+  catalogue (no hard-coded URLs past bootstrap), GETs Location/EVSE/Connector
+  through the real receiver router (asserting singular `tariff_id`), asserts
+  the 2003/NotFound failure path, START_SESSION sync ack + async result
+  callback route.
+- **CI:** `fmt` ✅ `clippy -D warnings` ✅ `test --workspace --all-features` ✅
+  (423 passed / 0 failed). `cargo deny`: not installed in this container, but
+  the diff has zero dependency changes — CI enforces it on the PR. No new deps.
+- **What worked:** grounding the issue scope against existing tests before
+  coding — half the issue's stated scope was already covered; the slice
+  shrank to what's genuinely untested.
+- **Next:** #142 (2.1.1 Locations sender list route) or #149 (2.2 foundation).
+  #153 stays blocked until #149 lands. #64 still awaits the owner's
+  Option A/B call.
+
+---
+
+## 2026-07-10 — Empty approval queue (night 3): still blocked, escalated to owner
+
+- **Sync (ground-truth ritual):** `git fetch origin main` ×2 → head unchanged at
+  `18111b9` (PR #150). **No feature merges since the 2026-07-07 groom.** Open PRs:
+  the 5 Dependabot CI bumps (#143–#147, guarded `.github/` path, owner's to
+  review) **plus my own night-2 docs PR #151** (`ready-for-review`,
+  `mergeable_state: clean`) — still open, awaiting the owner. That is **1 open
+  nightly PR** (under the ≤2 cap); its CI is clean, so nothing to fix.
+- **Blocker (unchanged, 3rd night):** `list_issues labels=[nightly] → 0`. The
+  approval queue is **still empty**. Owner-*filed* but *unapproved* slate is
+  intact: **#141** (2.1.1 e2e smoke test, P2), **#142** (2.1.1 Locations sender
+  route, P3), **#149** (2.2 back-coverage foundation, P3), **#64** (2.2.1
+  routing-headers *question*, open since 2026-06-17). Trust rule is
+  non-negotiable — the routine never self-approves → **nothing implementable.**
+- **Groom check:** M7's earliest-incomplete slate already holds ≥3 well-scoped
+  approvable issues (#141/#142/#149), so the "fewer than 3" trigger does **not**
+  fire — re-filing would be duplicate noise. Verified from ground truth (not
+  memory): `ocpi-types/src/` still has only `v2_1_1/`, `v2_2_1.rs`, `v2_3_0.rs`
+  (no `v2_2`/`v2_0`), so #149's premise holds and M7 is not complete → no README
+  flip due. Not a Sunday → no harder-groom mandate.
+- **Action:** to avoid stacking a third near-identical docs PR (and a JOURNAL
+  merge conflict against the unmerged #151), this entry is committed **on top of
+  #151's branch content**, so this PR carries a continuous 07-09 → 07-10 record.
+  Recommend the owner **merge this PR and close #151** as superseded. Also
+  **escalated to the owner** via notification — 3 nights idle is a standing
+  bottleneck only they can clear with one `nightly` label.
+- **CI:** n/a (docs-only run; no code touched).
+- **Next:** owner adds `nightly` to **#141** (recommended first — locks in the
+  2.1.1 transport surface before the 2.2 track builds on it), or #142/#149;
+  and/or answers #64's Option A/B ergonomics question.
+
+---
+
 ## 2026-07-09 — Empty approval queue (night 2): confirmed blocked, re-notified owner
 
 - **Sync (ground-truth ritual):** `git fetch origin main` ×2 → head unchanged at
