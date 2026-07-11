@@ -39,7 +39,7 @@
 //!
 //! ## Status of the known deltas
 //!
-//! - **CDRs slice (implemented here, [`mod@cdrs`]):** [`CdrToken`] drops
+//! - **CDRs slice (implemented here, in the `cdrs` submodule):** [`CdrToken`] drops
 //!   `country_code`/`party_id`; [`Cdr`] drops `home_charging_compensation`;
 //!   [`CdrLocation`] keeps `postal_code` **required** and has no `state`.
 //! - **Commands / Locations slices (still aliases, #153 follow-up):**
