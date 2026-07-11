@@ -45,6 +45,11 @@ use ocpi_types::v2_1_1::Session as Session2111;
 // keep it distinct from the role-bearing 2.2.1 `Cdr` imported above. See
 // [`Cdrs2111Config`].
 use ocpi_types::v2_1_1::Cdr as Cdr2111;
+// The OCPI 2.2 CDR object — a `CdrToken` with no `country_code`/`party_id`, a
+// `Cdr` with no `home_charging_compensation`, a `CdrLocation` with a required
+// `postal_code` and no `state` — aliased to keep it distinct from the
+// role-bearing 2.2.1 `Cdr` imported above. See [`Cdrs22Config`].
+use ocpi_types::v2_2::Cdr as Cdr22;
 // The OCPI 2.1.1 Tokens surface — `Token` keys on `auth_id`, `TokenType` covers
 // only `OTHER`/`RFID`, and `AuthorizationInfo` omits `token`/
 // `authorization_reference` — aliased to keep the 2.2.1 names above unqualified.
@@ -1792,6 +1797,184 @@ impl Cdrs2111Handler for Cdrs2111Config {
     }
 
     async fn post_cdr(&self, cdr: Cdr2111) -> Result<String, ServerError> {
+        Ok(self.store(cdr))
+    }
+}
+
+// ── Cdrs22Handler (OCPI 2.2) ────────────────────────────────────────────────────
+
+/// Handles the OCPI **2.2** CDRs module endpoints.
+///
+/// Implements both the **sender** interface (CPO exposes `GET /cdrs`) and the
+/// **receiver** interface (eMSP exposes `POST /cdrs` + `GET /cdrs/{cdr_id}`).
+///
+/// ## Delta from the 2.2.1 [`CdrsHandler`]
+///
+/// The transport is identical — a CDR is a **server-owned** object (the
+/// receiver names it via the `Location` header on `POST /cdrs`, §8.2.2), so the
+/// 2.2 paths are **flat** (`/cdrs`, `/cdrs/{cdr_id}`) with no
+/// `{country_code}/{party_id}` segments, exactly as in 2.2.1. Only the payload
+/// differs: the 2.2 [`Cdr22`] object — a `CdrToken` with no `country_code`/
+/// `party_id`, a `Cdr` with no `home_charging_compensation`, and a
+/// `CdrLocation` with a required `postal_code` and no `state`. Deserializing
+/// into [`Cdr22`] means a 2.2 partner's CDR round-trips faithfully instead of
+/// being coerced through the 2.2.1 struct.
+///
+/// Spec: OCPI 2.2 — *CDRs* module (§8), `specs/ocpi/2.2/mod_cdrs.asciidoc`.
+#[allow(async_fn_in_trait)]
+pub trait Cdrs22Handler {
+    /// Paginated list of 2.2 CDRs whose `last_updated` is in
+    /// `[date_from, date_to)` — sender interface (`GET /cdrs`).
+    ///
+    /// Returns `(page_items, total_count)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the query cannot be executed.
+    async fn get_cdrs(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<Cdr22>, u32), ServerError>;
+
+    /// Fetch a single 2.2 CDR by its ID — receiver interface
+    /// (`GET /cdrs/{cdr_id}`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when the CDR does not exist.
+    async fn get_cdr(&self, cdr_id: &str) -> Result<Cdr22, ServerError>;
+
+    /// Store a new 2.2 CDR and return its URL — receiver interface
+    /// (`POST /cdrs`).
+    ///
+    /// The returned `String` is the absolute URL at which the stored CDR can be
+    /// retrieved (used for the HTTP `Location` response header).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] on storage failure.
+    async fn post_cdr(&self, cdr: Cdr22) -> Result<String, ServerError>;
+}
+
+// ── Cdrs22Config (OCPI 2.2) ─────────────────────────────────────────────────────
+
+/// Thread-safe in-memory **OCPI 2.2** CDR store for use with
+/// [`http::cdrs_2_2_router`].
+///
+/// Mirrors [`Cdrs2111Config`] but stores the 2.2 [`Cdr22`] shape. CDRs are
+/// keyed by their `id`. The `base_url` (e.g.
+/// `"https://example.com/ocpi/2.2"`) is prepended to construct the `Location`
+/// header returned by `POST /cdrs`.
+pub struct Cdrs22Config {
+    base_url: String,
+    cdrs: std::sync::RwLock<std::collections::HashMap<String, Cdr22>>,
+}
+
+impl std::fmt::Debug for Cdrs22Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cdrs22Config")
+            .field("cdr_count", &self.cdrs.read().map(|m| m.len()).unwrap_or(0))
+            .field("base_url", &self.base_url)
+            .finish()
+    }
+}
+
+impl Cdrs22Config {
+    /// Create an empty 2.2 CDR store.
+    ///
+    /// `base_url` is used to build the `Location` header on `POST /cdrs`
+    /// (e.g. `"https://example.com/ocpi/2.2"`).
+    #[must_use]
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            cdrs: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Construct the URL for a CDR by its ID.
+    fn cdr_url(&self, cdr_id: &str) -> String {
+        format!("{}/cdrs/{cdr_id}", self.base_url.trim_end_matches('/'))
+    }
+
+    /// Store a CDR and return its URL.
+    pub fn store(&self, cdr: Cdr22) -> String {
+        let id = cdr.id.as_str().to_string();
+        let url = self.cdr_url(&id);
+        self.cdrs
+            .write()
+            .expect("lock not poisoned")
+            .insert(id, cdr);
+        url
+    }
+
+    /// Retrieve a CDR by its ID.
+    #[must_use]
+    pub fn get(&self, cdr_id: &str) -> Option<Cdr22> {
+        self.cdrs
+            .read()
+            .expect("lock not poisoned")
+            .get(cdr_id)
+            .cloned()
+    }
+
+    /// Return a filtered and paginated slice of CDRs.
+    ///
+    /// Filters by `last_updated >= date_from` and (if provided)
+    /// `last_updated < date_to`. Results are sorted by `last_updated`.
+    ///
+    /// Returns `(page_items, total_matching_count)`.
+    #[must_use]
+    pub fn list(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Cdr22>, u32) {
+        let map = self.cdrs.read().expect("lock not poisoned");
+        let mut filtered: Vec<&Cdr22> = map
+            .values()
+            .filter(|c| c.last_updated >= date_from && date_to.is_none_or(|dt| c.last_updated < dt))
+            .collect();
+        filtered.sort_by_key(|c| c.last_updated);
+        let total = filtered.len() as u32;
+        let page: Vec<Cdr22> = filtered
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        (page, total)
+    }
+}
+
+impl Default for Cdrs22Config {
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
+#[allow(async_fn_in_trait)]
+impl Cdrs22Handler for Cdrs22Config {
+    async fn get_cdrs(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<Cdr22>, u32), ServerError> {
+        Ok(self.list(date_from, date_to, offset, limit))
+    }
+
+    async fn get_cdr(&self, cdr_id: &str) -> Result<Cdr22, ServerError> {
+        self.get(cdr_id).ok_or(ServerError::NotFound)
+    }
+
+    async fn post_cdr(&self, cdr: Cdr22) -> Result<String, ServerError> {
         Ok(self.store(cdr))
     }
 }
@@ -4694,11 +4877,12 @@ pub mod http {
     };
 
     use crate::{
-        token_type_2_1_1_str, token_type_str, Cdrs2111Config, CdrsConfig, ChargingProfilesConfig,
-        ChargingProfilesHandler, Commands2111Config, Commands2111Handler, CommandsConfig,
-        CommandsHandler, Credentials2111Config, CredentialsConfig, HubClientInfoConfig,
-        Locations2111Config, LocationsConfig, ServerError, Sessions2111Config, SessionsConfig,
-        Tariffs2111Config, TariffsConfig, Tokens2111Config, TokensConfig, VersionsConfig,
+        token_type_2_1_1_str, token_type_str, Cdrs2111Config, Cdrs22Config, CdrsConfig,
+        ChargingProfilesConfig, ChargingProfilesHandler, Commands2111Config, Commands2111Handler,
+        CommandsConfig, CommandsHandler, Credentials2111Config, CredentialsConfig,
+        HubClientInfoConfig, Locations2111Config, LocationsConfig, ServerError, Sessions2111Config,
+        SessionsConfig, Tariffs2111Config, TariffsConfig, Tokens2111Config, TokensConfig,
+        VersionsConfig,
     };
     // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
     use ocpi_types::v2_1_1::Credentials as Credentials2111;
@@ -4708,6 +4892,8 @@ pub mod http {
     use ocpi_types::v2_1_1::Session as Session2111;
     // The OCPI 2.1.1 CDR object served by `cdrs_2_1_1_router`.
     use ocpi_types::v2_1_1::Cdr as Cdr2111;
+    // The OCPI 2.2 CDR object served by `cdrs_2_2_router`.
+    use ocpi_types::v2_2::Cdr as Cdr22;
     // The OCPI 2.1.1 Tokens surface served by `tokens_2_1_1_router`.
     use ocpi_types::v2_1_1::{
         AuthorizationInfo as AuthorizationInfo2111, LocationReferences as LocationReferences2111,
@@ -5538,6 +5724,98 @@ pub mod http {
         let mut response = (
             StatusCode::CREATED,
             Json(OcpiResponse::<Cdr2111>::success_empty()),
+        )
+            .into_response();
+        if let Ok(v) = location_url.parse() {
+            response.headers_mut().insert("location", v);
+        }
+        response
+    }
+
+    // ── CDRs (OCPI 2.2) ─────────────────────────────────────────────────────────
+
+    /// Build an axum router for the **OCPI 2.2** CDRs module.
+    ///
+    /// Exposes the same flat routes as the 2.2.1 [`cdrs_router`] — a CDR is a
+    /// server-owned object named via the `Location` header (§8.2.2), so there
+    /// are no `{country_code}/{party_id}` segments:
+    /// - `GET  /cdrs` — paginated list (sender interface, CPO)
+    /// - `GET  /cdrs/{cdr_id}` — single CDR (receiver interface, eMSP)
+    /// - `POST /cdrs` — store a new CDR (receiver interface, eMSP); responds
+    ///   `201 Created` with a `Location` header pointing to the stored CDR.
+    ///
+    /// Only the payload is the 2.2 [`Cdr22`] shape (a `CdrToken` with no
+    /// `country_code`/`party_id`, a `Cdr` with no `home_charging_compensation`,
+    /// a `CdrLocation` with a required `postal_code` and no `state`).
+    pub fn cdrs_2_2_router(config: Arc<Cdrs22Config>) -> Router {
+        Router::new()
+            .route("/cdrs", get(cdrs_2_2_list).post(cdrs_2_2_post))
+            .route("/cdrs/{cdr_id}", get(cdrs_2_2_get))
+            .with_state(config)
+    }
+
+    async fn cdrs_2_2_list(
+        State(cfg): State<Arc<Cdrs22Config>>,
+        Query(params): Query<PaginatedParams>,
+    ) -> Response {
+        use ocpi_types::chrono::TimeZone as _;
+        let date_from = params.date_from.unwrap_or_else(|| {
+            ocpi_types::Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .single()
+                .expect("epoch is valid")
+        });
+        let offset = params.offset.unwrap_or(0);
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
+
+        let (items, total) = cfg.list(date_from, params.date_to, offset, limit);
+        let page = OcpiPaged::new(items, offset, limit, total);
+        let next_offset = page.next_offset();
+        let body = page.into_response();
+
+        let mut response = Json(body).into_response();
+        let hdrs = response.headers_mut();
+        if let Ok(v) = total.to_string().parse() {
+            hdrs.insert("x-total-count", v);
+        }
+        if let Ok(v) = limit.to_string().parse() {
+            hdrs.insert("x-limit", v);
+        }
+        if let Some(next_off) = next_offset {
+            let link = format!("</cdrs?offset={next_off}&limit={limit}>; rel=\"next\"");
+            if let Ok(v) = link.parse() {
+                hdrs.insert("link", v);
+            }
+        }
+
+        response
+    }
+
+    async fn cdrs_2_2_get(
+        State(cfg): State<Arc<Cdrs22Config>>,
+        Path(cdr_id): Path<String>,
+    ) -> Response {
+        match cfg.get(&cdr_id) {
+            Some(cdr) => Json(OcpiResponse::success(cdr)).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<Cdr22>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!("CDR {cdr_id} not found"),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn cdrs_2_2_post(
+        State(cfg): State<Arc<Cdrs22Config>>,
+        Json(cdr): Json<Cdr22>,
+    ) -> Response {
+        let location_url = cfg.store(cdr);
+        let mut response = (
+            StatusCode::CREATED,
+            Json(OcpiResponse::<Cdr22>::success_empty()),
         )
             .into_response();
         if let Ok(v) = location_url.parse() {
@@ -8258,6 +8536,167 @@ mod tests {
         let ts = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
         let url = cfg.store(make_cdr("CDR001", ts));
         assert_eq!(url, "https://example.com/ocpi/2.2.1/cdrs/CDR001");
+    }
+
+    // ── Cdrs22Config tests (OCPI 2.2) ─────────────────────────────────────────
+
+    // Build a spec-shaped OCPI 2.2 CDR: its `CdrToken` has no `country_code`/
+    // `party_id`, its `CdrLocation` carries a required `postal_code` and no
+    // `state`, and the `Cdr` has no `home_charging_compensation`.
+    fn make_cdr_2_2(id: &str, ts: DateTime<Utc>) -> Cdr22 {
+        use ocpi_types::common::{CiString2, CiString3, CiString36, CiString39, CiString48};
+        use ocpi_types::v2_2::{
+            AuthMethod as AuthMethod22, CdrLocation as CdrLocation22, CdrToken as CdrToken22,
+            ChargingPeriod as ChargingPeriod22, ConnectorFormat as ConnectorFormat22,
+            ConnectorType as ConnectorType22, PowerType as PowerType22, TokenType as TokenType22,
+        };
+        use ocpi_types::v2_2_1::{CdrDimension, CdrDimensionType};
+        Cdr22 {
+            country_code: CiString2::try_from("NL").unwrap(),
+            party_id: CiString3::try_from("CPO").unwrap(),
+            id: CiString39::try_from(id).unwrap(),
+            start_date_time: ts,
+            end_date_time: ts,
+            session_id: None,
+            cdr_token: CdrToken22 {
+                uid: CiString36::try_from("RFID001").unwrap(),
+                token_type: TokenType22::Rfid,
+                contract_id: CiString36::try_from("NL-MSP-0001").unwrap(),
+            },
+            auth_method: AuthMethod22::Whitelist,
+            authorization_reference: None,
+            cdr_location: CdrLocation22 {
+                id: CiString36::try_from("LOC1").unwrap(),
+                name: None,
+                address: "Test St 1".into(),
+                city: "Amsterdam".into(),
+                postal_code: "1000 AA".into(),
+                country: "NLD".into(),
+                coordinates: ocpi_types::common::GeoLocation {
+                    latitude: "52.370216".into(),
+                    longitude: "4.895168".into(),
+                },
+                evse_uid: CiString36::try_from("EVSE1").unwrap(),
+                evse_id: CiString48::try_from("NL*CPO*E001").unwrap(),
+                connector_id: CiString36::try_from("1").unwrap(),
+                connector_standard: ConnectorType22::Iec62196T2,
+                connector_format: ConnectorFormat22::Socket,
+                connector_power_type: PowerType22::Ac3Phase,
+            },
+            meter_id: None,
+            currency: "EUR".into(),
+            tariffs: vec![],
+            charging_periods: vec![ChargingPeriod22 {
+                start_date_time: ts,
+                dimensions: vec![CdrDimension {
+                    dimension_type: CdrDimensionType::Energy,
+                    volume: 10.0,
+                }],
+                tariff_id: None,
+            }],
+            signed_data: None,
+            total_cost: ocpi_types::common::Price {
+                excl_vat: 2.50,
+                incl_vat: None,
+            },
+            total_fixed_cost: None,
+            total_energy: 10.0,
+            total_energy_cost: None,
+            total_time: 0.5,
+            total_time_cost: None,
+            total_parking_time: None,
+            total_parking_cost: None,
+            total_reservation_cost: None,
+            remark: None,
+            invoice_reference_id: None,
+            credit: None,
+            credit_reference_id: None,
+            last_updated: ts,
+        }
+    }
+
+    #[test]
+    fn cdrs_22_config_store_and_get_roundtrip() {
+        let cfg = Cdrs22Config::new("https://example.com/ocpi/2.2");
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let cdr = make_cdr_2_2("CDR001", ts);
+        let url = cfg.store(cdr.clone());
+        assert_eq!(url, "https://example.com/ocpi/2.2/cdrs/CDR001");
+        let got = cfg.get("CDR001").unwrap();
+        assert_eq!(got.id.as_str(), "CDR001");
+        // The 2.2 delta shape survives the store round-trip.
+        assert_eq!(got.cdr_location.postal_code, "1000 AA");
+    }
+
+    #[test]
+    fn cdrs_22_config_get_missing_returns_none() {
+        let cfg = Cdrs22Config::new("https://example.com/ocpi/2.2");
+        assert!(cfg.get("MISSING").is_none());
+    }
+
+    #[test]
+    fn cdrs_22_config_list_filters_and_paginates() {
+        let cfg = Cdrs22Config::new("https://example.com/ocpi/2.2");
+        let epoch = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
+        for i in 0u32..5 {
+            let ts = epoch + ocpi_types::chrono::Duration::seconds(i64::from(i));
+            cfg.store(make_cdr_2_2(&format!("CDR{i:03}"), ts));
+        }
+
+        // date_from filter drops the earliest two.
+        let cutoff = epoch + ocpi_types::chrono::Duration::seconds(2);
+        let (items, total) = cfg.list(cutoff, None, 0, 50);
+        assert_eq!(total, 3);
+        assert_eq!(items[0].id.as_str(), "CDR002");
+
+        // Pagination: offset 2, limit 2 over the full set.
+        let (page, total_all) = cfg.list(epoch, None, 2, 2);
+        assert_eq!(total_all, 5);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].id.as_str(), "CDR002");
+        assert_eq!(page[1].id.as_str(), "CDR003");
+    }
+
+    #[tokio::test]
+    async fn cdrs_22_handler_post_then_get() {
+        let cfg = Cdrs22Config::new("https://example.com/ocpi/2.2");
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let url = Cdrs22Handler::post_cdr(&cfg, make_cdr_2_2("CDR777", ts))
+            .await
+            .unwrap();
+        assert_eq!(url, "https://example.com/ocpi/2.2/cdrs/CDR777");
+        let got = Cdrs22Handler::get_cdr(&cfg, "CDR777").await.unwrap();
+        assert_eq!(got.id.as_str(), "CDR777");
+        // A missing CDR is a NotFound, not a panic.
+        assert!(matches!(
+            Cdrs22Handler::get_cdr(&cfg, "NOPE").await,
+            Err(ServerError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn cdr_2_2_delta_shape_round_trips_unmangled() {
+        // A 2.2 partner's CDR JSON: the token has no country_code/party_id, the
+        // location's postal_code is present, and there is no
+        // home_charging_compensation. It must deserialize into Cdr22 and
+        // re-serialize without ever gaining a 2.2.1-only field.
+        use ocpi_types::serde_json;
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let cdr = make_cdr_2_2("CDR001", ts);
+        let json = serde_json::to_string(&cdr).unwrap();
+        assert!(
+            !json.contains("home_charging_compensation"),
+            "2.2 Cdr must not emit the 2.2.1-only home_charging_compensation: {json}"
+        );
+        // The token object must not carry the 2.2.1-added owner fields.
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let token = &value["cdr_token"];
+        assert!(token.get("country_code").is_none());
+        assert!(token.get("party_id").is_none());
+        // Faithful round-trip back into the 2.2 struct.
+        let back: Cdr22 = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id.as_str(), "CDR001");
+        assert_eq!(back.cdr_location.postal_code, "1000 AA");
     }
 
     // ── TariffsConfig tests ───────────────────────────────────────────────────
