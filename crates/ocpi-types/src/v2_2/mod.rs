@@ -49,9 +49,12 @@
 //! - **Locations slice (implemented here, in the `locations` submodule):**
 //!   [`PowerType`] drops the `AC_2_PHASE` / `AC_2_PHASE_SPLIT` values and
 //!   [`ConnectorType`] drops the 2.2.1-added values (`CHAOJI`, `DOMESTIC_M`/`N`/
-//!   `O`, `GBT_AC`/`GBT_DC`, and the extended NEMA family). The re-exported
-//!   `Connector`/`Evse`/`Location` still reference the 2.2.1 enums internally —
-//!   overriding those composites is the Locations wiring follow-up.
+//!   `O`, `GBT_AC`/`GBT_DC`, and the extended NEMA family). The composites that
+//!   carry those enums — [`Connector`]/[`Evse`]/[`Location`] — are `v2_2`-local
+//!   too, structurally identical to their 2.2.1 counterparts but with the 2.2
+//!   connector enums, so a 2.2.1-only plug/power value cannot ride a 2.2
+//!   connector (#167). The client/server Locations wiring is the remaining #167
+//!   follow-up.
 //! - **[`SignedData`] is intentionally *not* overridden.** The 2.2.1 change
 //!   ("SignedData URL datatype fixed, blob length raised to 5000, signed-data
 //!   fields to string") only relaxes `CiString(512)` string bounds — which this
@@ -92,17 +95,20 @@ pub use cdrs::{Cdr, CdrLocation, CdrToken};
 mod commands;
 pub use commands::StartSession;
 
-// ── Locations slice: 2.2-vs-2.2.1 wire-delta overrides (#153 / #158) ──────────
+// ── Locations slice: 2.2-vs-2.2.1 wire-delta overrides (#153 / #158 / #167) ───
 //
 // Two Connector enums differ on the 2.2 wire — `PowerType` (no `AC_2_PHASE`
 // variants) and `ConnectorType` (no 2.2.1-added values) — so they are
-// `v2_2`-local types (see `locations`). Every other Locations type (`Location`,
-// `Evse`, `Connector`, `ConnectorFormat`, `Capability`, …) is wire-identical
-// and stays a re-export. The re-exported `Connector` still references the 2.2.1
-// enums internally; overriding the composite Locations objects is the Locations
-// wiring follow-up (see the `locations` module doc).
+// `v2_2`-local types (see `locations`). The composite objects that embed them,
+// `Connector` → `Evse` → `Location`, are `v2_2`-local too: structurally
+// identical to their 2.2.1 counterparts, but their connector `standard` /
+// `power_type` are the 2.2 enums, so a 2.2.1-only plug/power value cannot ride a
+// 2.2 connector (#167). Every other Locations field type (`ConnectorFormat`,
+// `Capability`, `GeoLocation`, `Status`, …) is wire-identical and stays a
+// re-export. The remaining Locations follow-up (#167) is the client/server
+// wiring over these composites.
 mod locations;
-pub use locations::{ConnectorType, PowerType};
+pub use locations::{Connector, ConnectorType, Evse, Location, PowerType};
 
 // ── Functional + configuration module types ───────────────────────────────────
 //
@@ -116,13 +122,12 @@ pub use crate::v2_2_1::{
     ChargingProfilePeriod, ChargingProfileResponse, ChargingProfileResponseType,
     ChargingProfileResult, ChargingProfileResultType, ChargingRateUnit, ClearProfileResult,
     ClientInfo, CommandResponse, CommandResponseType, CommandResult, CommandResultType,
-    CommandType, ConnectionStatus, Connector, ConnectorFormat, Credentials, CredentialsRole,
-    DayOfWeek, EnergyContract, Evse, ExceptionalPeriod, Facility, Hours, ImageCategory, Location,
-    LocationReferences, ParkingRestriction, ParkingType, PriceComponent, ProfileType,
-    PublishTokenType, RegularHours, ReservationRestrictionType, ReserveNow, Session, SessionStatus,
-    SetChargingProfile, SignedData, SignedValue, Status, StatusSchedule, StopSession, Tariff,
-    TariffDimensionType, TariffElement, TariffRestrictions, TariffType, Token, TokenType,
-    UnlockConnector, WhitelistType,
+    CommandType, ConnectionStatus, ConnectorFormat, Credentials, CredentialsRole, DayOfWeek,
+    EnergyContract, ExceptionalPeriod, Facility, Hours, ImageCategory, LocationReferences,
+    ParkingRestriction, ParkingType, PriceComponent, ProfileType, PublishTokenType, RegularHours,
+    ReservationRestrictionType, ReserveNow, Session, SessionStatus, SetChargingProfile, SignedData,
+    SignedValue, Status, StatusSchedule, StopSession, Tariff, TariffDimensionType, TariffElement,
+    TariffRestrictions, TariffType, Token, TokenType, UnlockConnector, WhitelistType,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
