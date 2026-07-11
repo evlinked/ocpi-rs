@@ -46,9 +46,15 @@
 //!
 //! ## Status of the deltas
 //!
-//! None are implemented yet — this is the **foundation** slice (#174). Each
-//! delta lands in its own follow-up over this module; until then the README
-//! support-matrix 2.3.0 column stays ☐ (planned), not ◑/☑.
+//! - **Credentials** — implemented (#179): [`credentials::Credentials`] adds the
+//!   optional `hub_party_id` field; [`CredentialsRole`] stays a re-export
+//!   (wire-identical — the 2.3.0 change is only *which* roles a hub lists).
+//! - Payments, the Locations Parking/`accepted_emsps`/15118 additions, and the
+//!   North-American tax fields are not implemented yet — each lands in its own
+//!   follow-up over this module.
+//!
+//! The README support-matrix 2.3.0 column stays ☐ (planned) until the module
+//! set is complete.
 
 // ── Version / endpoint layer ──────────────────────────────────────────────────
 //
@@ -61,6 +67,14 @@
 pub use crate::version::{
     Endpoint, InterfaceRole, ModuleID, Version, VersionDetails, VersionNumber,
 };
+
+// ── 2.3.0-local delta modules ─────────────────────────────────────────────────
+//
+// The first genuine 2.3.0-vs-2.2.1 wire override: Credentials gains the
+// `hub_party_id` field. `CredentialsRole` is re-exported from `credentials`
+// (which itself re-exports the 2.2.1 type) so the two names travel together.
+mod credentials;
+pub use credentials::{Credentials, CredentialsRole};
 
 // ── Functional + configuration module types ───────────────────────────────────
 //
@@ -77,13 +91,12 @@ pub use crate::v2_2_1::{
     ChargingProfileResponseType, ChargingProfileResult, ChargingProfileResultType,
     ChargingRateUnit, ClearProfileResult, ClientInfo, CommandResponse, CommandResponseType,
     CommandResult, CommandResultType, CommandType, ConnectionStatus, Connector, ConnectorFormat,
-    ConnectorType, Credentials, CredentialsRole, DayOfWeek, EnergyContract, Evse,
-    ExceptionalPeriod, Facility, Hours, ImageCategory, Location, LocationReferences,
-    ParkingRestriction, ParkingType, PowerType, PriceComponent, ProfileType, PublishTokenType,
-    RegularHours, ReservationRestrictionType, ReserveNow, Session, SessionStatus,
-    SetChargingProfile, SignedData, SignedValue, StartSession, Status, StatusSchedule, StopSession,
-    Tariff, TariffDimensionType, TariffElement, TariffRestrictions, TariffType, Token, TokenType,
-    UnlockConnector, WhitelistType,
+    ConnectorType, DayOfWeek, EnergyContract, Evse, ExceptionalPeriod, Facility, Hours,
+    ImageCategory, Location, LocationReferences, ParkingRestriction, ParkingType, PowerType,
+    PriceComponent, ProfileType, PublishTokenType, RegularHours, ReservationRestrictionType,
+    ReserveNow, Session, SessionStatus, SetChargingProfile, SignedData, SignedValue, StartSession,
+    Status, StatusSchedule, StopSession, Tariff, TariffDimensionType, TariffElement,
+    TariffRestrictions, TariffType, Token, TokenType, UnlockConnector, WhitelistType,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -223,7 +236,11 @@ mod tests {
         let _: fn(crate::v2_2_1::Connector) -> super::Connector = |x| x; // 15118 flags land here
         let _: fn(crate::v2_2_1::Tariff) -> super::Tariff = |x| x; // NA tax fields land here
         let _: fn(crate::v2_2_1::Cdr) -> super::Cdr = |x| x; // NA tax fields land here
-        let _: fn(crate::v2_2_1::Credentials) -> super::Credentials = |x| x; // hub party id lands here
+                                                             // NOTE: `Credentials` is intentionally *absent* here — #179 forked it
+                                                             // into a `v2_3_0`-local override (the `hub_party_id` field), so it is no
+                                                             // longer an alias of `v2_2_1::Credentials`. `CredentialsRole` stays
+                                                             // wire-identical and is still covered by the re-export path.
+        let _: fn(crate::v2_2_1::CredentialsRole) -> super::CredentialsRole = |x| x;
         let _: fn(crate::v2_2_1::Session) -> super::Session = |x| x;
         let _: fn(crate::v2_2_1::Token) -> super::Token = |x| x;
         let _: fn(crate::v2_2_1::StartSession) -> super::StartSession = |x| x;
