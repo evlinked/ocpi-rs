@@ -44,6 +44,13 @@ use ocpi_types::v2_1_1::Session as Session2111;
 // from the root-exported 2.2.1 `Cdr` above. See `crate::get_cdrs_2_1_1`.
 use ocpi_types::v2_1_1::Cdr as Cdr2111;
 use ocpi_types::v2_1_1::{Connector as Connector2111, Evse as Evse2111, Location as Location2111};
+// The OCPI 2.2 Locations composites (`Connector`/`Evse`/`Location`): structurally
+// identical to their 2.2.1 counterparts, but their connector `standard`/`power_type`
+// are the 2.2 enums (`v2_2::{ConnectorType, PowerType}` — no `AC_2_PHASE`, no
+// `GBT_*`/`CHAOJI`/extended-NEMA, …), so a 2.2.1-only plug/power value is rejected
+// on the 2.2 path rather than silently coerced. Aliased to keep the 2.2.1 names
+// above unqualified. See `crate::OcpiClient::get_locations_2_2` and friends.
+use ocpi_types::v2_2::{Connector as Connector22, Evse as Evse22, Location as Location22};
 // The OCPI 2.1.1 Tokens types (`Token` keys on `auth_id` with `OTHER`/`RFID`
 // only; `AuthorizationInfo` omits `token`/`authorization_reference`; its
 // `LocationReferences` keeps the 2.1.1-only `connector_ids`), aliased to keep the
@@ -1135,6 +1142,177 @@ impl OcpiClient {
         }
         let response = response.error_for_status()?;
         let envelope: OcpiResponse<Connector2111> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    // ── Locations (2.2 back-coverage) ────────────────────────────────────────────
+
+    /// Fetch a paginated list of **OCPI 2.2** Locations from a CPO's Sender
+    /// interface (`GET {url}`).
+    ///
+    /// Mirrors [`OcpiClient::get_locations`] but deserializes into the *2.2*
+    /// composite ([`ocpi_types::v2_2::Location`]): structurally identical to the
+    /// 2.2.1 object, but each connector's `standard`/`power_type` is the **2.2**
+    /// enum — so a 2.2.1-only plug/power value (`AC_2_PHASE`, `GBT_DC`,
+    /// `CHAOJI`, an extended `NEMA_*`, …) is **rejected on deserialize** rather
+    /// than silently coerced through the more permissive 2.2.1 struct. The
+    /// Sender-interface path is identical to 2.2.1/2.1.1 (the
+    /// `{country_code}/{party_id}` segments only appear on the Receiver
+    /// interface), so only the payload type differs.
+    ///
+    /// `url` is the absolute URL of the CPO's 2.2 Locations sender endpoint;
+    /// `params` carries `date_from`, `date_to`, `offset`, and `limit`. Use
+    /// [`PaginationMeta::next_url`] to retrieve subsequent pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, the
+    /// envelope carries no data, or the payload carries a 2.2.1-only connector
+    /// enum value (which fails to deserialize on the 2.2 path).
+    ///
+    /// See `specs/ocpi/2.2` — *Locations*, Sender Interface, GET List.
+    pub async fn get_locations_2_2(
+        &self,
+        url: &str,
+        params: PaginatedParams,
+    ) -> Result<(Vec<Location22>, PaginationMeta), ClientError> {
+        let mut parsed = url::Url::parse(url)?;
+        if let Some(date_from) = params.date_from {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_from", &date_from.to_rfc3339());
+        }
+        if let Some(date_to) = params.date_to {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_to", &date_to.to_rfc3339());
+        }
+        if let Some(offset) = params.offset {
+            parsed
+                .query_pairs_mut()
+                .append_pair("offset", &offset.to_string());
+        }
+        if let Some(limit) = params.limit {
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?
+            .error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<Location22>> = response.json().await?;
+        let locations = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((locations, meta))
+    }
+
+    /// Fetch a single **OCPI 2.2** Location by id from a CPO's Sender interface
+    /// (`GET {url}/{location_id}`).
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_location_2_2(
+        &self,
+        url: &str,
+        location_id: &str,
+    ) -> Result<Location22, ClientError> {
+        let endpoint = join_segments(url, &[location_id]);
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Location22> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Fetch a single **OCPI 2.2** EVSE from a CPO's Sender interface
+    /// (`GET {url}/{location_id}/{evse_uid}`).
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_evse_2_2(
+        &self,
+        url: &str,
+        location_id: &str,
+        evse_uid: &str,
+    ) -> Result<Evse22, ClientError> {
+        let endpoint = join_segments(url, &[location_id, evse_uid]);
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Evse22> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Fetch a single **OCPI 2.2** Connector from a CPO's Sender interface
+    /// (`GET {url}/{location_id}/{evse_uid}/{connector_id}`).
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_connector_2_2(
+        &self,
+        url: &str,
+        location_id: &str,
+        evse_uid: &str,
+        connector_id: &str,
+    ) -> Result<Connector22, ClientError> {
+        let endpoint = join_segments(url, &[location_id, evse_uid, connector_id]);
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Connector22> = response.json().await?;
         envelope.data.ok_or(ClientError::EmptyData)
     }
 
