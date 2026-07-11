@@ -73,6 +73,9 @@ use ocpi_types::v2_1_1::{
     ReserveNow as ReserveNow2111, StartSession as StartSession2111, StopSession as StopSession2111,
     UnlockConnector as UnlockConnector2111,
 };
+// The OCPI 2.2 `StartSession` (no `connector_id`) sent by `start_session_2_2`.
+// Every other 2.2 command uses the wire-identical 2.2.1 types imported above.
+use ocpi_types::v2_2::StartSession as StartSession22;
 use url::Url;
 
 fn token_type_str(t: TokenType) -> &'static str {
@@ -2909,6 +2912,40 @@ impl OcpiClient {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+
+    // ── Commands (OCPI 2.2) ─────────────────────────────────────────────────────
+
+    /// Send an **OCPI 2.2** `START_SESSION` command to a CPO's commands endpoint.
+    ///
+    /// The 2.2 [`StartSession22`](ocpi_types::v2_2::StartSession) body has **no**
+    /// `connector_id` — that field arrived in 2.2.1 (in 2.2 the Charge Point picks
+    /// the connector). This is the **only** Commands method that differs from
+    /// 2.2.1: `CANCEL_RESERVATION`, `RESERVE_NOW`, `STOP_SESSION`,
+    /// `UNLOCK_CONNECTOR`, and the async `CommandResult` callback all use
+    /// wire-identical types, so a 2.2 party drives them with the existing
+    /// [`cancel_reservation`](Self::cancel_reservation) /
+    /// [`reserve_now`](Self::reserve_now) / [`stop_session`](Self::stop_session) /
+    /// [`unlock_connector`](Self::unlock_connector) /
+    /// [`post_command_result`](Self::post_command_result) methods unchanged. The
+    /// minimal 2.2 surface is intentional — aliasing identical-typed calls would
+    /// only imply a difference that does not exist.
+    ///
+    /// The command-type path segment (`/START_SESSION`) is appended automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the response carries no data.
+    pub async fn start_session_2_2(
+        &self,
+        commands_url: &str,
+        cmd: StartSession22,
+    ) -> Result<CommandResponse, ClientError> {
+        // `post_command` is generic over the body and returns the shared
+        // (2.2.1-identical) `CommandResponse`; only the 2.2 `StartSession` type
+        // differs, so the existing helper serves the 2.2 call directly.
+        self.post_command(commands_url, CommandType::StartSession, &cmd)
+            .await
     }
 
     // ── ChargingProfiles ──────────────────────────────────────────────────────
