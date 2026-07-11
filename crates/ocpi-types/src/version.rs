@@ -114,6 +114,8 @@ pub enum ModuleID {
     HubClientInfo,
     /// Locations module.
     Locations,
+    /// Payments module (`"payments"`) — introduced in OCPI 2.3.0.
+    Payments,
     /// Sessions module.
     Sessions,
     /// Tariffs module.
