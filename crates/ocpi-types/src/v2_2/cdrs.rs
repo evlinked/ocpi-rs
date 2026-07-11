@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::{CiString36, CiString39, CiString48, GeoLocation, Price};
 
-// Shared, wire-identical types are pulled from the `v2_2` re-export surface so
-// that when the Commands/Locations slices land (#153) and override
-// `ConnectorType` / `ConnectorFormat` / `PowerType`, `CdrLocation` picks up the
-// 2.2 shapes automatically without another edit here.
+// Types are pulled from the `v2_2` re-export surface (not `crate::v2_2_1`) so
+// that overrides picked up automatically: with the Locations slice landed
+// (#158), `ConnectorType` / `PowerType` here are the 2.2 enums, while
+// `ConnectorFormat` and the rest stay wire-identical re-exports.
 use super::{
     AuthMethod, ChargingPeriod, ConnectorFormat, ConnectorType, PowerType, SignedData, Tariff,
     TokenType,
@@ -180,7 +180,7 @@ pub struct Cdr {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cdr, CdrLocation, CdrToken};
+    use super::{Cdr, CdrLocation, CdrToken, ConnectorType, PowerType};
 
     #[test]
     fn cdr_token_2_2_has_no_country_code_or_party_id() {
@@ -221,9 +221,9 @@ mod tests {
             evse_uid: "3256".try_into().unwrap(),
             evse_id: "BE*BEC*E041503001".try_into().unwrap(),
             connector_id: "1".try_into().unwrap(),
-            connector_standard: crate::v2_2_1::ConnectorType::Iec62196T2,
+            connector_standard: ConnectorType::Iec62196T2,
             connector_format: crate::v2_2_1::ConnectorFormat::Socket,
-            connector_power_type: crate::v2_2_1::PowerType::Ac3Phase,
+            connector_power_type: PowerType::Ac3Phase,
         };
 
         let out = serde_json::to_string(&loc).unwrap();
