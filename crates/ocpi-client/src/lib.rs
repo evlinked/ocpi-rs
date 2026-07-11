@@ -15,7 +15,7 @@ pub use error::ClientError;
 
 use ocpi_server::{FetchError, FetchFuture, LegacyVersionFetcher, VersionFetcher};
 use ocpi_types::{
-    transport::{CredentialToken, PaginatedParams, PaginationMeta},
+    transport::{CredentialToken, OcpiRoutingHeaders, PaginatedParams, PaginationMeta},
     v2_2_1::{
         ActiveChargingProfile, ActiveChargingProfileResult, AuthorizationInfo, CancelReservation,
         Cdr, ChargingPreferences, ChargingPreferencesResponse, ChargingProfileResponse,
@@ -44,6 +44,11 @@ use ocpi_types::v2_1_1::Session as Session2111;
 // from the root-exported 2.2.1 `Cdr` above. See `crate::get_cdrs_2_1_1`.
 use ocpi_types::v2_1_1::Cdr as Cdr2111;
 use ocpi_types::v2_1_1::{Connector as Connector2111, Evse as Evse2111, Location as Location2111};
+// The OCPI 2.2 CDR object — a `CdrToken` with no `country_code`/`party_id`, a
+// `Cdr` with no `home_charging_compensation`, a `CdrLocation` with a required
+// `postal_code` and no `state` — aliased to keep it distinct from the
+// root-exported 2.2.1 `Cdr` above. See `crate::get_cdrs_2_2`.
+use ocpi_types::v2_2::Cdr as Cdr22;
 // The OCPI 2.1.1 Tokens types (`Token` keys on `auth_id` with `OTHER`/`RFID`
 // only; `AuthorizationInfo` omits `token`/`authorization_reference`; its
 // `LocationReferences` keeps the 2.1.1-only `connector_ids`), aliased to keep the
@@ -177,6 +182,48 @@ pub struct OcpiClient {
     /// When `true`, the token is sent raw (not Base64-encoded).
     /// Use only when connecting to legacy 2.1.1/2.2 peers.
     compat_raw_token: bool,
+    /// OCPI message-routing headers attached to **functional-module** requests
+    /// (Locations, Sessions, CDRs, Tariffs, Tokens, Commands, ChargingProfiles)
+    /// so a Hub can route them. Empty by default; populate via
+    /// [`Self::with_party`] (the `OCPI-from-*` pair — this client's own identity)
+    /// and [`Self::with_counterparty`] (the `OCPI-to-*` pair — the remote party).
+    /// **Never** sent on configuration modules (Versions, Credentials,
+    /// HubClientInfo). Per `transport_and_format.asciidoc` §Request Headers.
+    routing: OcpiRoutingHeaders,
+}
+
+/// Attach OCPI functional-module routing headers to a request builder.
+///
+/// Each of the four headers is attached only when its corresponding field is
+/// `Some`, so an unconfigured client sends none (backward-compatible) and a
+/// half-configured one sends only what it knows. Configuration-module methods
+/// simply never call this, keeping them header-free per the spec.
+trait OcpiRoutingExt {
+    /// Attach the `OCPI-to/from-party-id/country-code` headers present in
+    /// `headers` to this request builder.
+    fn ocpi_routing(self, headers: &OcpiRoutingHeaders) -> Self;
+}
+
+impl OcpiRoutingExt for reqwest::RequestBuilder {
+    fn ocpi_routing(mut self, headers: &OcpiRoutingHeaders) -> Self {
+        use ocpi_types::transport::{
+            HEADER_OCPI_FROM_COUNTRY_CODE, HEADER_OCPI_FROM_PARTY_ID, HEADER_OCPI_TO_COUNTRY_CODE,
+            HEADER_OCPI_TO_PARTY_ID,
+        };
+        if let Some(v) = &headers.to_party_id {
+            self = self.header(HEADER_OCPI_TO_PARTY_ID, v);
+        }
+        if let Some(v) = &headers.to_country_code {
+            self = self.header(HEADER_OCPI_TO_COUNTRY_CODE, v);
+        }
+        if let Some(v) = &headers.from_party_id {
+            self = self.header(HEADER_OCPI_FROM_PARTY_ID, v);
+        }
+        if let Some(v) = &headers.from_country_code {
+            self = self.header(HEADER_OCPI_FROM_COUNTRY_CODE, v);
+        }
+        self
+    }
 }
 
 impl OcpiClient {
@@ -192,6 +239,7 @@ impl OcpiClient {
             token: token.into(),
             http: reqwest::Client::new(),
             compat_raw_token: false,
+            routing: OcpiRoutingHeaders::default(),
         }
     }
 
@@ -203,6 +251,56 @@ impl OcpiClient {
     pub fn with_compat_raw_token(mut self, compat: bool) -> Self {
         self.compat_raw_token = compat;
         self
+    }
+
+    /// Set this client's **own** party identity — the `OCPI-from-country-code`
+    /// / `OCPI-from-party-id` routing pair sent on every functional-module
+    /// request so a Hub knows who the message is *from*.
+    ///
+    /// `country_code` is an ISO 3166-1 alpha-2 code; `party_id` is the
+    /// eMI3-assigned operator identifier (up to 3 chars).
+    #[must_use]
+    pub fn with_party(
+        mut self,
+        country_code: impl Into<String>,
+        party_id: impl Into<String>,
+    ) -> Self {
+        self.routing.from_country_code = Some(country_code.into());
+        self.routing.from_party_id = Some(party_id.into());
+        self
+    }
+
+    /// Set the **counterparty** identity — the `OCPI-to-country-code` /
+    /// `OCPI-to-party-id` routing pair sent on every functional-module request
+    /// so a Hub knows who the message is *for*.
+    ///
+    /// `country_code` is an ISO 3166-1 alpha-2 code; `party_id` is the
+    /// eMI3-assigned operator identifier (up to 3 chars).
+    #[must_use]
+    pub fn with_counterparty(
+        mut self,
+        country_code: impl Into<String>,
+        party_id: impl Into<String>,
+    ) -> Self {
+        self.routing.to_country_code = Some(country_code.into());
+        self.routing.to_party_id = Some(party_id.into());
+        self
+    }
+
+    /// Set the full [`OcpiRoutingHeaders`] block directly, overriding whatever
+    /// [`Self::with_party`] / [`Self::with_counterparty`] configured. Useful
+    /// when relaying a message whose routing pair differs from the transport
+    /// credentials (e.g. a Hub forwarding on behalf of a third party).
+    #[must_use]
+    pub fn with_routing_headers(mut self, routing: OcpiRoutingHeaders) -> Self {
+        self.routing = routing;
+        self
+    }
+
+    /// The routing headers this client attaches to functional-module requests.
+    #[must_use]
+    pub fn routing_headers(&self) -> &OcpiRoutingHeaders {
+        &self.routing
     }
 
     /// The configured base URL.
@@ -493,7 +591,8 @@ impl OcpiClient {
         let mut req = self
             .http
             .get(url::Url::parse(url)?)
-            .header("Authorization", self.auth_header_value());
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing);
         if let Some(df) = params.date_from {
             req = req.query(&[("date_from", df.to_rfc3339())]);
         }
@@ -569,6 +668,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -605,6 +705,7 @@ impl OcpiClient {
         self.http
             .put(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(session)
             .send()
             .await?
@@ -642,6 +743,7 @@ impl OcpiClient {
             .http
             .patch(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(partial)
             .send()
             .await?;
@@ -679,6 +781,7 @@ impl OcpiClient {
             .http
             .put(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(preferences)
             .send()
             .await?
@@ -730,6 +833,7 @@ impl OcpiClient {
             .http
             .get(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -773,6 +877,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -797,6 +902,7 @@ impl OcpiClient {
             .http
             .post(url::Url::parse(url)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(cdr)
             .send()
             .await?
@@ -857,6 +963,7 @@ impl OcpiClient {
             .http
             .get(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -906,6 +1013,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -935,6 +1043,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -965,6 +1074,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1026,6 +1136,7 @@ impl OcpiClient {
             .http
             .get(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -1074,6 +1185,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1102,6 +1214,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1131,6 +1244,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1191,6 +1305,7 @@ impl OcpiClient {
             .http
             .get(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -1246,6 +1361,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1274,6 +1390,7 @@ impl OcpiClient {
         self.http
             .put(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(session)
             .send()
             .await?
@@ -1306,6 +1423,7 @@ impl OcpiClient {
             .http
             .patch(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(partial)
             .send()
             .await?;
@@ -1367,6 +1485,7 @@ impl OcpiClient {
             .http
             .get(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -1415,6 +1534,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1438,6 +1558,147 @@ impl OcpiClient {
     /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
     /// `Location` header is absent/unparseable.
     pub async fn post_cdr_2_1_1(&self, url: &str, cdr: &Cdr2111) -> Result<String, ClientError> {
+        let response = self
+            .http
+            .post(url::Url::parse(url)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .json(cdr)
+            .send()
+            .await?
+            .error_for_status()?;
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned())
+            .ok_or(ClientError::EmptyData)?;
+        Ok(location)
+    }
+
+    // ── CDRs (2.2) ────────────────────────────────────────────────────────────
+
+    /// Fetch a paginated list of **OCPI 2.2** CDRs from a CPO's Sender
+    /// interface (`GET {url}`).
+    ///
+    /// Mirrors [`OcpiClient::get_cdrs`] but deserializes the *2.2* wire shape
+    /// ([`ocpi_types::v2_2::Cdr`]: its `CdrToken` has no `country_code`/
+    /// `party_id`, the `Cdr` has no `home_charging_compensation`, and its
+    /// `CdrLocation` carries a required `postal_code` with no `state`). A CDR is
+    /// a server-owned object, so the path is flat — identical to 2.2.1/2.1.1;
+    /// only the payload type differs.
+    ///
+    /// `url` is the absolute URL of the CPO's 2.2 CDRs sender endpoint; `params`
+    /// carries `date_from`, `date_to`, `offset`, and `limit`. Use
+    /// [`PaginationMeta::next_url`] to retrieve subsequent pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// envelope carries no data.
+    ///
+    /// See `specs/ocpi/2.2` — *CDRs*, Sender Interface (§8.2.1), GET List.
+    pub async fn get_cdrs_2_2(
+        &self,
+        url: &str,
+        params: PaginatedParams,
+    ) -> Result<(Vec<Cdr22>, PaginationMeta), ClientError> {
+        let mut parsed = url::Url::parse(url)?;
+        if let Some(date_from) = params.date_from {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_from", &date_from.to_rfc3339());
+        }
+        if let Some(date_to) = params.date_to {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_to", &date_to.to_rfc3339());
+        }
+        if let Some(offset) = params.offset {
+            parsed
+                .query_pairs_mut()
+                .append_pair("offset", &offset.to_string());
+        }
+        if let Some(limit) = params.limit {
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?
+            .error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<Cdr22>> = response.json().await?;
+        let cdrs = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((cdrs, meta))
+    }
+
+    /// Fetch a single **OCPI 2.2** CDR by its ID from an eMSP's Receiver
+    /// interface (`GET {url}/{cdr_id}`).
+    ///
+    /// Per OCPI 2.2 §8.2.2 a CDR is a server-owned object addressed by the
+    /// `Location` header returned from `POST /cdrs`; the path is flat, identical
+    /// to 2.2.1's [`OcpiClient::get_cdr`].
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_cdr_2_2(&self, url: &str, cdr_id: &str) -> Result<Cdr22, ClientError> {
+        let endpoint = format!("{}/{cdr_id}", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Cdr22> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Push a new **OCPI 2.2** CDR to an eMSP's Receiver interface
+    /// (`POST {url}`).
+    ///
+    /// On success the eMSP responds with `201 Created` and a `Location` header
+    /// pointing to the stored CDR (§8.2.2). This method returns that URL string.
+    /// Mirrors [`OcpiClient::post_cdr`]; only the payload is the 2.2
+    /// [`ocpi_types::v2_2::Cdr`] shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// `Location` header is absent/unparseable.
+    pub async fn post_cdr_2_2(&self, url: &str, cdr: &Cdr22) -> Result<String, ClientError> {
         let response = self
             .http
             .post(url::Url::parse(url)?)
@@ -1498,6 +1759,7 @@ impl OcpiClient {
             .http
             .get(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -1554,6 +1816,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1588,6 +1851,7 @@ impl OcpiClient {
         self.http
             .put(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(tariff)
             .send()
             .await?
@@ -1620,6 +1884,7 @@ impl OcpiClient {
             .http
             .delete(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1674,6 +1939,7 @@ impl OcpiClient {
             .http
             .get(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -1734,6 +2000,7 @@ impl OcpiClient {
             .http
             .get(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1768,6 +2035,7 @@ impl OcpiClient {
         self.http
             .put(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(tariff)
             .send()
             .await?
@@ -1800,6 +2068,7 @@ impl OcpiClient {
             .http
             .delete(url::Url::parse(&endpoint)?)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1859,6 +2128,7 @@ impl OcpiClient {
             .http
             .get(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -1918,6 +2188,7 @@ impl OcpiClient {
         self.http
             .put(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(token)
             .send()
             .await?
@@ -1955,6 +2226,7 @@ impl OcpiClient {
             .http
             .patch(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(partial)
             .send()
             .await?;
@@ -1996,7 +2268,8 @@ impl OcpiClient {
         let mut req = self
             .http
             .post(parsed)
-            .header("Authorization", self.auth_header_value());
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing);
         if let Some(loc) = location {
             req = req.json(loc);
         }
@@ -2052,6 +2325,7 @@ impl OcpiClient {
             .http
             .get(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -2116,6 +2390,7 @@ impl OcpiClient {
         self.http
             .put(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(token)
             .send()
             .await?
@@ -2154,6 +2429,7 @@ impl OcpiClient {
             .http
             .patch(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(partial)
             .send()
             .await?;
@@ -2193,7 +2469,8 @@ impl OcpiClient {
         let mut req = self
             .http
             .post(parsed)
-            .header("Authorization", self.auth_header_value());
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing);
         if let Some(loc) = location {
             req = req.json(loc);
         }
@@ -2224,6 +2501,7 @@ impl OcpiClient {
             .http
             .post(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(body)
             .send()
             .await?
@@ -2323,6 +2601,7 @@ impl OcpiClient {
         self.http
             .post(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(&result)
             .send()
             .await?
@@ -2355,6 +2634,7 @@ impl OcpiClient {
             .http
             .post(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(body)
             .send()
             .await?
@@ -2448,6 +2728,7 @@ impl OcpiClient {
         self.http
             .post(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(&result)
             .send()
             .await?
@@ -2519,6 +2800,7 @@ impl OcpiClient {
             .http
             .get(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -2547,6 +2829,7 @@ impl OcpiClient {
             .http
             .put(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(&profile)
             .send()
             .await?
@@ -2579,6 +2862,7 @@ impl OcpiClient {
             .http
             .delete(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .send()
             .await?
             .error_for_status()?;
@@ -2616,6 +2900,7 @@ impl OcpiClient {
         self.http
             .put(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(&profile)
             .send()
             .await?
@@ -2677,6 +2962,7 @@ impl OcpiClient {
         self.http
             .post(parsed)
             .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
             .json(result)
             .send()
             .await?
@@ -3041,9 +3327,13 @@ impl LegacyVersionFetcher for OcpiVersionFetcher {
 mod tests {
     use super::{
         charging_profile_url, fetch_auth_header, join_segments, negotiate_version, parse_fetch_url,
-        select_version, OcpiClient, OcpiVersionFetcher,
+        select_version, OcpiClient, OcpiRoutingExt, OcpiVersionFetcher,
     };
     use ocpi_server::{FetchError, VersionFetcher};
+    use ocpi_types::transport::{
+        OcpiRoutingHeaders, HEADER_OCPI_FROM_COUNTRY_CODE, HEADER_OCPI_FROM_PARTY_ID,
+        HEADER_OCPI_TO_COUNTRY_CODE, HEADER_OCPI_TO_PARTY_ID,
+    };
     use ocpi_types::{
         common::Url as OcpiUrl,
         serde_json,
@@ -3425,5 +3715,115 @@ mod tests {
 
         // `Default` matches `new()`.
         let _default = OcpiVersionFetcher::default();
+    }
+
+    // ── Routing headers (issue #64) ─────────────────────────────────────────
+
+    fn client() -> OcpiClient {
+        OcpiClient::new(Url::parse("https://example.com/ocpi/").unwrap(), "tok")
+    }
+
+    #[test]
+    fn new_client_has_no_routing_headers() {
+        // Backward-compatible: an unconfigured client carries an empty routing
+        // block, so functional-module requests send no OCPI-to/from-* headers.
+        assert_eq!(client().routing_headers(), &OcpiRoutingHeaders::default());
+    }
+
+    #[test]
+    fn with_party_sets_the_from_pair_only() {
+        let c = client().with_party("NL", "EVL");
+        let r = c.routing_headers();
+        assert_eq!(r.from_country_code.as_deref(), Some("NL"));
+        assert_eq!(r.from_party_id.as_deref(), Some("EVL"));
+        assert_eq!(r.to_country_code, None);
+        assert_eq!(r.to_party_id, None);
+    }
+
+    #[test]
+    fn with_counterparty_sets_the_to_pair_only() {
+        let c = client().with_counterparty("DE", "ABC");
+        let r = c.routing_headers();
+        assert_eq!(r.to_country_code.as_deref(), Some("DE"));
+        assert_eq!(r.to_party_id.as_deref(), Some("ABC"));
+        assert_eq!(r.from_country_code, None);
+        assert_eq!(r.from_party_id, None);
+    }
+
+    #[test]
+    fn with_party_and_counterparty_compose() {
+        let c = client()
+            .with_party("NL", "EVL")
+            .with_counterparty("DE", "ABC");
+        let r = c.routing_headers();
+        assert_eq!(r.from_country_code.as_deref(), Some("NL"));
+        assert_eq!(r.from_party_id.as_deref(), Some("EVL"));
+        assert_eq!(r.to_country_code.as_deref(), Some("DE"));
+        assert_eq!(r.to_party_id.as_deref(), Some("ABC"));
+    }
+
+    #[test]
+    fn with_routing_headers_overrides_the_builders() {
+        let explicit = OcpiRoutingHeaders {
+            to_party_id: Some("HUB".into()),
+            to_country_code: Some("BE".into()),
+            from_party_id: Some("EVL".into()),
+            from_country_code: Some("NL".into()),
+        };
+        let c = client()
+            .with_party("XX", "OLD")
+            .with_routing_headers(explicit.clone());
+        assert_eq!(c.routing_headers(), &explicit);
+    }
+
+    // The `ocpi_routing` extension is what stamps the headers onto an outbound
+    // request. We inspect the built `reqwest::Request` headers directly — no
+    // network — to prove exactly which headers get attached.
+    fn routed_headers(routing: &OcpiRoutingHeaders) -> reqwest::header::HeaderMap {
+        reqwest::Client::new()
+            .get("https://example.com/ocpi/2.2.1/sessions")
+            .ocpi_routing(routing)
+            .build()
+            .expect("request builds")
+            .headers()
+            .clone()
+    }
+
+    #[test]
+    fn ext_attaches_all_four_headers_when_fully_configured() {
+        let routing = client()
+            .with_party("NL", "EVL")
+            .with_counterparty("DE", "ABC")
+            .routing_headers()
+            .clone();
+        let h = routed_headers(&routing);
+        assert_eq!(h.get(HEADER_OCPI_FROM_COUNTRY_CODE).unwrap(), "NL");
+        assert_eq!(h.get(HEADER_OCPI_FROM_PARTY_ID).unwrap(), "EVL");
+        assert_eq!(h.get(HEADER_OCPI_TO_COUNTRY_CODE).unwrap(), "DE");
+        assert_eq!(h.get(HEADER_OCPI_TO_PARTY_ID).unwrap(), "ABC");
+    }
+
+    #[test]
+    fn ext_attaches_nothing_when_unconfigured() {
+        let h = routed_headers(&OcpiRoutingHeaders::default());
+        for name in [
+            HEADER_OCPI_FROM_COUNTRY_CODE,
+            HEADER_OCPI_FROM_PARTY_ID,
+            HEADER_OCPI_TO_COUNTRY_CODE,
+            HEADER_OCPI_TO_PARTY_ID,
+        ] {
+            assert!(h.get(name).is_none(), "{name} must be absent");
+        }
+    }
+
+    #[test]
+    fn ext_attaches_only_the_configured_half() {
+        // A client that knows only its own identity sends just the from-* pair.
+        let routing = client().with_party("NL", "EVL").routing_headers().clone();
+        let h = routed_headers(&routing);
+        assert_eq!(h.get(HEADER_OCPI_FROM_COUNTRY_CODE).unwrap(), "NL");
+        assert_eq!(h.get(HEADER_OCPI_FROM_PARTY_ID).unwrap(), "EVL");
+        assert!(h.get(HEADER_OCPI_TO_COUNTRY_CODE).is_none());
+        assert!(h.get(HEADER_OCPI_TO_PARTY_ID).is_none());
     }
 }
