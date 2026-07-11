@@ -42,11 +42,14 @@
 //! - **CDRs slice (implemented here, in the `cdrs` submodule):** [`CdrToken`] drops
 //!   `country_code`/`party_id`; [`Cdr`] drops `home_charging_compensation`;
 //!   [`CdrLocation`] keeps `postal_code` **required** and has no `state`.
-//! - **Commands / Locations slices (still aliases, #153 follow-up):**
-//!   [`StartSession`] (no `connector_id`), [`PowerType`] (no `AC_2_PHASE`
-//!   variants), [`ConnectorType`] (no 2.2.1-added values) remain re-exports of
-//!   their 2.2.1 counterparts until their slice lands (proven by the alias
-//!   assertions in the tests below).
+//! - **Commands slice (implemented here, in the `commands` submodule):**
+//!   [`StartSession`] drops `connector_id` (in 2.2 the Charge Point picks the
+//!   connector). The `START_SESSION_CONNECTOR_REQUIRED` capability 2.2.1 added
+//!   stays a re-export — see the `commands` module doc.
+//! - **Locations slice (still aliases, #153 follow-up):** [`PowerType`] (no
+//!   `AC_2_PHASE` variants) and [`ConnectorType`] (no 2.2.1-added values)
+//!   remain re-exports of their 2.2.1 counterparts until their slice lands
+//!   (proven by the alias assertions in the tests below).
 //! - **[`SignedData`] is intentionally *not* overridden.** The 2.2.1 change
 //!   ("SignedData URL datatype fixed, blob length raised to 5000, signed-data
 //!   fields to string") only relaxes `CiString(512)` string bounds — which this
@@ -76,12 +79,23 @@ pub use crate::version::{
 mod cdrs;
 pub use cdrs::{Cdr, CdrLocation, CdrToken};
 
+// ── Commands slice: 2.2-vs-2.2.1 wire-delta override (#153 / #157) ────────────
+//
+// Only `StartSession` differs on the 2.2 wire (no `connector_id`), so it is a
+// `v2_2`-local type (see `commands`). Every other Commands type — `CommandType`,
+// `CommandResponse`, `CommandResult`, `ReserveNow`, `StopSession`,
+// `UnlockConnector`, `CancelReservation` — is wire-identical and stays a
+// re-export. The `Capability::StartSessionConnectorRequired` value 2.2.1 added
+// is intentionally kept a re-export (see the `commands` module doc).
+mod commands;
+pub use commands::StartSession;
+
 // ── Functional + configuration module types ───────────────────────────────────
 //
 // Wire-identical to 2.2.1 → plain re-exports. The delta types flagged in the
-// module docs that are not yet sliced (Commands/Locations) are still aliases
-// here; their #153 follow-ups replace those specific lines with `v2_2`-local
-// overrides, exactly as the CDRs slice above did.
+// module docs that are not yet sliced (Locations) are still aliases here; their
+// #153 follow-ups replace those specific lines with `v2_2`-local overrides,
+// exactly as the CDRs and Commands slices above did.
 pub use crate::v2_2_1::{
     ActiveChargingProfile, ActiveChargingProfileResult, AdditionalGeoLocation, AllowedType,
     AuthMethod, AuthorizationInfo, CancelReservation, Capability, CdrDimension, CdrDimensionType,
@@ -93,9 +107,9 @@ pub use crate::v2_2_1::{
     CredentialsRole, DayOfWeek, EnergyContract, Evse, ExceptionalPeriod, Facility, Hours,
     ImageCategory, Location, LocationReferences, ParkingRestriction, ParkingType, PowerType,
     PriceComponent, ProfileType, PublishTokenType, RegularHours, ReservationRestrictionType,
-    ReserveNow, Session, SessionStatus, SetChargingProfile, SignedData, SignedValue, StartSession,
-    Status, StatusSchedule, StopSession, Tariff, TariffDimensionType, TariffElement,
-    TariffRestrictions, TariffType, Token, TokenType, UnlockConnector, WhitelistType,
+    ReserveNow, Session, SessionStatus, SetChargingProfile, SignedData, SignedValue, Status,
+    StatusSchedule, StopSession, Tariff, TariffDimensionType, TariffElement, TariffRestrictions,
+    TariffType, Token, TokenType, UnlockConnector, WhitelistType,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -218,20 +232,19 @@ mod tests {
 
     #[test]
     fn remaining_delta_types_are_aliases_of_2_2_1_until_overridden() {
-        // The 2.2-vs-2.2.1 wire deltas NOT yet sliced (Commands/Locations, the
-        // #153 follow-ups). Until each override lands, `v2_2::X` must be the
+        // The 2.2-vs-2.2.1 wire deltas NOT yet sliced (Locations, the remaining
+        // #153 follow-up). Until each override lands, `v2_2::X` must be the
         // *very same type* as `v2_2_1::X`. Each identity closure only compiles
         // if the two paths name one type — a zero-cost, compile-time alias
         // assertion that will start failing the moment a genuine local override
         // is introduced (the reminder to drop the corresponding line here).
         //
-        // The CDRs slice (`CdrToken`, `Cdr`, `CdrLocation`) is now a real
-        // override and is deliberately absent from this list. `SignedData` /
-        // `SignedValue` stay re-exports on purpose (see the module docs), so
-        // they keep their alias assertion.
+        // The CDRs slice (`CdrToken`, `Cdr`, `CdrLocation`) and the Commands
+        // slice (`StartSession`) are now real overrides and are deliberately
+        // absent from this list. `SignedData` / `SignedValue` stay re-exports on
+        // purpose (see the module docs), so they keep their alias assertion.
         let _: fn(crate::v2_2_1::SignedData) -> super::SignedData = |x| x;
         let _: fn(crate::v2_2_1::SignedValue) -> super::SignedValue = |x| x;
-        let _: fn(crate::v2_2_1::StartSession) -> super::StartSession = |x| x;
         let _: fn(crate::v2_2_1::PowerType) -> super::PowerType = |x| x;
         let _: fn(crate::v2_2_1::ConnectorType) -> super::ConnectorType = |x| x;
     }
