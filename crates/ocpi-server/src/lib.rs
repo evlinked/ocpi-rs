@@ -69,6 +69,11 @@ use ocpi_types::v2_1_1::{
     CommandType as CommandType2111, ReserveNow as ReserveNow2111, StartSession as StartSession2111,
     StopSession as StopSession2111, UnlockConnector as UnlockConnector2111,
 };
+// The OCPI 2.2 Commands surface — wire-identical to 2.2.1 except `StartSession`,
+// which drops `connector_id` (added in 2.2.1; in 2.2 the Charge Point picks the
+// connector). Only that one type is aliased; every other 2.2 Commands type is the
+// re-exported 2.2.1 type. See [`Commands22Config`] / [`http::commands_2_2_router`].
+use ocpi_types::v2_2::StartSession as StartSession22;
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -3229,6 +3234,176 @@ impl Commands2111Handler for Commands2111Config {
     }
 }
 
+// ── Commands22Handler (OCPI 2.2) ────────────────────────────────────────────────
+
+/// Handles the OCPI **2.2** Commands module endpoints.
+///
+/// Implements the **receiver** interface (CPO receives commands from an eMSP)
+/// and the **sender** interface (eMSP receives the async `CommandResult`
+/// callback from the CPO), exactly like the 2.2.1 [`CommandsHandler`].
+///
+/// ## Delta from the 2.2.1 [`CommandsHandler`]
+///
+/// The two versions are wire-identical **except** for `START_SESSION`:
+/// [`handle_start_session`](Commands22Handler::handle_start_session) takes a
+/// [`StartSession22`] (`ocpi_types::v2_2::StartSession`), which has **no**
+/// `connector_id` — that field arrived in 2.2.1 (together with the
+/// `START_SESSION_CONNECTOR_REQUIRED` EVSE capability). In OCPI 2.2 a
+/// `START_SESSION` targets a Location, optionally narrowed to an EVSE, and the
+/// Charge Point picks the connector. Landing the command in the 2.2 type means a
+/// stray `connector_id` from a non-conformant peer is **not** carried into the
+/// session rather than being silently honoured. Every other command body
+/// (`CancelReservation`, `ReserveNow`, `StopSession`, `UnlockConnector`) and the
+/// `CommandResponse`/`CommandResult` objects are the re-exported 2.2.1 types.
+///
+/// The 2.2 receiver path is **flat** (`/commands/{command}`) — Commands is a
+/// verb-style RPC keyed by the Sender-supplied `response_url`, identical to
+/// 2.2.1.
+///
+/// Spec: `specs/ocpi/2.2/mod_commands.asciidoc`.
+#[allow(async_fn_in_trait)]
+pub trait Commands22Handler {
+    /// Receive a `CANCEL_RESERVATION` command — receiver interface
+    /// (`POST /commands/CANCEL_RESERVATION`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the command cannot be forwarded to the Charge Point.
+    async fn handle_cancel_reservation(
+        &self,
+        cmd: CancelReservation,
+    ) -> Result<CommandResponse, ServerError>;
+
+    /// Receive a `RESERVE_NOW` command — receiver interface
+    /// (`POST /commands/RESERVE_NOW`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the command cannot be forwarded to the Charge Point.
+    async fn handle_reserve_now(&self, cmd: ReserveNow) -> Result<CommandResponse, ServerError>;
+
+    /// Receive a `START_SESSION` command — receiver interface
+    /// (`POST /commands/START_SESSION`).
+    ///
+    /// Takes the **2.2** [`StartSession22`] — no `connector_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the command cannot be forwarded to the Charge Point.
+    async fn handle_start_session(
+        &self,
+        cmd: StartSession22,
+    ) -> Result<CommandResponse, ServerError>;
+
+    /// Receive a `STOP_SESSION` command — receiver interface
+    /// (`POST /commands/STOP_SESSION`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the command cannot be forwarded to the Charge Point.
+    async fn handle_stop_session(&self, cmd: StopSession) -> Result<CommandResponse, ServerError>;
+
+    /// Receive an `UNLOCK_CONNECTOR` command — receiver interface
+    /// (`POST /commands/UNLOCK_CONNECTOR`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the command cannot be forwarded to the Charge Point.
+    async fn handle_unlock_connector(
+        &self,
+        cmd: UnlockConnector,
+    ) -> Result<CommandResponse, ServerError>;
+
+    /// Receive the asynchronous result from the Charge Point — sender interface
+    /// (`POST /commands/{command_type}/result`).
+    ///
+    /// The CPO delivers this after the Charge Point has executed (or failed to
+    /// execute) the command. The `response_url` in each command object points here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the result cannot be processed.
+    async fn receive_command_result(
+        &self,
+        command_type: CommandType,
+        result: CommandResult,
+    ) -> Result<(), ServerError>;
+}
+
+// ── Commands22Config (OCPI 2.2) ─────────────────────────────────────────────────
+
+/// Stateless placeholder **OCPI 2.2** Commands handler for use with
+/// [`http::commands_2_2_router`].
+///
+/// Returns [`CommandResponseType::NotSupported`] for every incoming command.
+/// Replace with a concrete bridge implementation when real CPO/OCPP integration
+/// is needed; implement [`Commands22Handler`] on your own type and wire it to an
+/// axum state of `Arc<YourType>`.
+#[derive(Debug, Default)]
+pub struct Commands22Config;
+
+impl Commands22Config {
+    /// Create a new `Commands22Config` placeholder.
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Returns the default "not supported" [`CommandResponse`].
+    ///
+    /// Used by the placeholder implementation and useful as a starting point
+    /// when overriding specific commands. The 2.2 `CommandResponse` is
+    /// wire-identical to 2.2.1 (`result` + `timeout` + `message`).
+    #[must_use]
+    pub fn not_supported_response() -> CommandResponse {
+        CommandResponse {
+            result: CommandResponseType::NotSupported,
+            timeout: 30,
+            message: vec![],
+        }
+    }
+}
+
+#[allow(async_fn_in_trait)]
+impl Commands22Handler for Commands22Config {
+    async fn handle_cancel_reservation(
+        &self,
+        _cmd: CancelReservation,
+    ) -> Result<CommandResponse, ServerError> {
+        Ok(Self::not_supported_response())
+    }
+
+    async fn handle_reserve_now(&self, _cmd: ReserveNow) -> Result<CommandResponse, ServerError> {
+        Ok(Self::not_supported_response())
+    }
+
+    async fn handle_start_session(
+        &self,
+        _cmd: StartSession22,
+    ) -> Result<CommandResponse, ServerError> {
+        Ok(Self::not_supported_response())
+    }
+
+    async fn handle_stop_session(&self, _cmd: StopSession) -> Result<CommandResponse, ServerError> {
+        Ok(Self::not_supported_response())
+    }
+
+    async fn handle_unlock_connector(
+        &self,
+        _cmd: UnlockConnector,
+    ) -> Result<CommandResponse, ServerError> {
+        Ok(Self::not_supported_response())
+    }
+
+    async fn receive_command_result(
+        &self,
+        _command_type: CommandType,
+        _result: CommandResult,
+    ) -> Result<(), ServerError> {
+        Ok(())
+    }
+}
+
 // ── ChargingProfilesHandler ───────────────────────────────────────────────────
 
 /// Handles the OCPI ChargingProfiles module endpoints.
@@ -4695,10 +4870,11 @@ pub mod http {
 
     use crate::{
         token_type_2_1_1_str, token_type_str, Cdrs2111Config, CdrsConfig, ChargingProfilesConfig,
-        ChargingProfilesHandler, Commands2111Config, Commands2111Handler, CommandsConfig,
-        CommandsHandler, Credentials2111Config, CredentialsConfig, HubClientInfoConfig,
-        Locations2111Config, LocationsConfig, ServerError, Sessions2111Config, SessionsConfig,
-        Tariffs2111Config, TariffsConfig, Tokens2111Config, TokensConfig, VersionsConfig,
+        ChargingProfilesHandler, Commands2111Config, Commands2111Handler, Commands22Config,
+        Commands22Handler, CommandsConfig, CommandsHandler, Credentials2111Config,
+        CredentialsConfig, HubClientInfoConfig, Locations2111Config, LocationsConfig, ServerError,
+        Sessions2111Config, SessionsConfig, Tariffs2111Config, TariffsConfig, Tokens2111Config,
+        TokensConfig, VersionsConfig,
     };
     // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
     use ocpi_types::v2_1_1::Credentials as Credentials2111;
@@ -4723,6 +4899,10 @@ pub mod http {
         ReserveNow as ReserveNow2111, StartSession as StartSession2111,
         StopSession as StopSession2111, UnlockConnector as UnlockConnector2111,
     };
+    // The OCPI 2.2 `StartSession` served by `commands_2_2_router` — no
+    // `connector_id`. Every other 2.2 command body is the wire-identical 2.2.1
+    // type already imported above.
+    use ocpi_types::v2_2::StartSession as StartSession22;
 
     // ── Versions ──────────────────────────────────────────────────────────────
 
@@ -6451,6 +6631,269 @@ pub mod http {
         #[test]
         fn router_constructs_without_panic() {
             let _router = commands_2_1_1_router(Arc::new(Commands2111Config::new()));
+        }
+    }
+
+    // ── Commands (OCPI 2.2) ─────────────────────────────────────────────────────
+
+    /// Build an axum router for the OCPI **2.2** Commands module.
+    ///
+    /// Exposes the full receiver surface:
+    /// - `POST /commands/CANCEL_RESERVATION` — receiver (CPO)
+    /// - `POST /commands/RESERVE_NOW` — receiver (CPO)
+    /// - `POST /commands/START_SESSION` — receiver (CPO)
+    /// - `POST /commands/STOP_SESSION` — receiver (CPO)
+    /// - `POST /commands/UNLOCK_CONNECTOR` — receiver (CPO)
+    /// - `POST /commands/{command_type}/result` — sender result callback (eMSP)
+    ///
+    /// Mirrors [`commands_router`] (2.2.1) exactly, except `START_SESSION` is
+    /// deserialized into the **2.2** [`StartSession22`] — no `connector_id`. Every
+    /// other body/response type is the wire-identical 2.2.1 type. Landing the
+    /// command in the 2.2 type is the point of this router: a 2.2 Charge Point
+    /// never agreed to honour a Sender-pinned connector, so the field simply does
+    /// not exist to carry.
+    ///
+    /// The default [`Commands22Config`] responds `NOT_SUPPORTED` to every command.
+    /// Wire a custom implementation for real CPO/OCPP bridging.
+    pub fn commands_2_2_router(config: Arc<Commands22Config>) -> Router {
+        Router::new()
+            .route(
+                "/commands/CANCEL_RESERVATION",
+                post(cmds_22_cancel_reservation),
+            )
+            .route("/commands/RESERVE_NOW", post(cmds_22_reserve_now))
+            .route("/commands/START_SESSION", post(cmds_22_start_session))
+            .route("/commands/STOP_SESSION", post(cmds_22_stop_session))
+            .route("/commands/UNLOCK_CONNECTOR", post(cmds_22_unlock_connector))
+            .route(
+                "/commands/{command_type}/result",
+                post(cmds_22_receive_result),
+            )
+            .with_state(config)
+    }
+
+    async fn cmds_22_cancel_reservation(
+        State(cfg): State<Arc<Commands22Config>>,
+        Json(cmd): Json<CancelReservation>,
+    ) -> Response {
+        match cfg.handle_cancel_reservation(cmd).await {
+            Ok(resp) => Json(OcpiResponse::success(resp)).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<CommandResponse>::error(
+                    e.status_code(),
+                    e.to_string(),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn cmds_22_reserve_now(
+        State(cfg): State<Arc<Commands22Config>>,
+        Json(cmd): Json<ReserveNow>,
+    ) -> Response {
+        match cfg.handle_reserve_now(cmd).await {
+            Ok(resp) => Json(OcpiResponse::success(resp)).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<CommandResponse>::error(
+                    e.status_code(),
+                    e.to_string(),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn cmds_22_start_session(
+        State(cfg): State<Arc<Commands22Config>>,
+        Json(cmd): Json<StartSession22>,
+    ) -> Response {
+        match cfg.handle_start_session(cmd).await {
+            Ok(resp) => Json(OcpiResponse::success(resp)).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<CommandResponse>::error(
+                    e.status_code(),
+                    e.to_string(),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn cmds_22_stop_session(
+        State(cfg): State<Arc<Commands22Config>>,
+        Json(cmd): Json<StopSession>,
+    ) -> Response {
+        match cfg.handle_stop_session(cmd).await {
+            Ok(resp) => Json(OcpiResponse::success(resp)).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<CommandResponse>::error(
+                    e.status_code(),
+                    e.to_string(),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn cmds_22_unlock_connector(
+        State(cfg): State<Arc<Commands22Config>>,
+        Json(cmd): Json<UnlockConnector>,
+    ) -> Response {
+        match cfg.handle_unlock_connector(cmd).await {
+            Ok(resp) => Json(OcpiResponse::success(resp)).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<CommandResponse>::error(
+                    e.status_code(),
+                    e.to_string(),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn cmds_22_receive_result(
+        State(cfg): State<Arc<Commands22Config>>,
+        Path(command_type_str): Path<String>,
+        Json(result): Json<CommandResult>,
+    ) -> Response {
+        let command_type = match ocpi_types::serde_json::from_value::<CommandType>(
+            ocpi_types::serde_json::Value::String(command_type_str.clone()),
+        ) {
+            Ok(ct) => ct,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(OcpiResponse::<CommandResponse>::error(
+                        OcpiStatusCode::InvalidParameters,
+                        format!("unknown command type: {command_type_str}"),
+                    )),
+                )
+                    .into_response()
+            }
+        };
+        match cfg.receive_command_result(command_type, result).await {
+            Ok(()) => Json(OcpiResponse::<CommandResult>::success_empty()).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(OcpiResponse::<CommandResult>::error(
+                    e.status_code(),
+                    e.to_string(),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    // ── Commands 2.2 handler tests (#165) ──────────────────────────────────────
+    //
+    // Drive the `Commands22Handler` placeholder directly (no live socket): the
+    // 2.2 `START_SESSION` lands in `v2_2::StartSession` (no `connector_id`), a
+    // stray `connector_id` from a non-conformant peer does not survive the 2.2
+    // deserialize, every receiver command acks `NOT_SUPPORTED`, and the router
+    // constructs. Full HTTP client↔server round-trips live in the client crate's
+    // `m7_commands_2_2` integration test. Spec: `specs/ocpi/2.2/mod_commands.asciidoc`.
+    #[cfg(test)]
+    mod commands_22_tests {
+        use super::*;
+        use ocpi_types::v2_2_1::CommandResponseType;
+
+        /// A spec-shaped 2.2 `START_SESSION` (no `connector_id`).
+        fn start_session_json() -> &'static str {
+            r#"{
+                "response_url": "https://msp.example/ocpi/2.2/commands/START_SESSION/42",
+                "token": {
+                    "country_code": "DE",
+                    "party_id": "TNM",
+                    "uid": "12345678905880",
+                    "type": "RFID",
+                    "contract_id": "DE8ACC12E46L89",
+                    "issuer": "TheNewMotion",
+                    "valid": true,
+                    "whitelist": "ALWAYS",
+                    "last_updated": "2018-12-10T17:25:10Z"
+                },
+                "location_id": "LOC1",
+                "evse_uid": "EVSE1"
+            }"#
+        }
+
+        #[tokio::test]
+        async fn placeholder_acks_start_session_not_supported() {
+            let cmd: StartSession22 =
+                ocpi_types::serde_json::from_str(start_session_json()).unwrap();
+            let cfg = Commands22Config::new();
+            let resp = cfg.handle_start_session(cmd).await.unwrap();
+            assert_eq!(resp.result, CommandResponseType::NotSupported);
+            // The 2.2 CommandResponse keeps the 2.2.1 `timeout`/`message` fields.
+            assert_eq!(resp.timeout, 30);
+            assert!(resp.message.is_empty());
+        }
+
+        #[test]
+        fn start_session_2_2_drops_stray_connector_id() {
+            // A non-conformant peer pins a `connector_id`; the 2.2 receiver type
+            // has no such field, so it never survives into the session.
+            let with_connector = start_session_json().replace(
+                "\"LOC1\",",
+                "\"LOC1\",\n                \"connector_id\": \"1\",",
+            );
+            let cmd: StartSession22 = ocpi_types::serde_json::from_str(&with_connector).unwrap();
+            let out = ocpi_types::serde_json::to_string(&cmd).unwrap();
+            assert!(
+                !out.contains("connector_id"),
+                "2.2 START_SESSION must not resurrect a connector_id: {out}"
+            );
+        }
+
+        #[tokio::test]
+        async fn placeholder_acks_every_receiver_command_not_supported() {
+            let cfg = Commands22Config::new();
+            let cancel: CancelReservation = ocpi_types::serde_json::from_str(
+                r#"{"response_url":"https://msp.example/cmd","reservation_id":"res-1"}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.handle_cancel_reservation(cancel).await.unwrap().result,
+                CommandResponseType::NotSupported
+            );
+            let stop: StopSession = ocpi_types::serde_json::from_str(
+                r#"{"response_url":"https://msp.example/cmd","session_id":"sess-1"}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.handle_stop_session(stop).await.unwrap().result,
+                CommandResponseType::NotSupported
+            );
+            let unlock: UnlockConnector = ocpi_types::serde_json::from_str(
+                r#"{"response_url":"https://msp.example/cmd","location_id":"LOC1","evse_uid":"EVSE1","connector_id":"1"}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.handle_unlock_connector(unlock).await.unwrap().result,
+                CommandResponseType::NotSupported
+            );
+        }
+
+        #[tokio::test]
+        async fn placeholder_accepts_async_result_callback() {
+            // In 2.2 the async callback body is a distinct `CommandResult`.
+            let cfg = Commands22Config::new();
+            let result: CommandResult =
+                ocpi_types::serde_json::from_str(r#"{"result":"ACCEPTED"}"#).unwrap();
+            cfg.receive_command_result(CommandType::StartSession, result)
+                .await
+                .unwrap();
+        }
+
+        #[test]
+        fn router_constructs_without_panic() {
+            let _router = commands_2_2_router(Arc::new(Commands22Config::new()));
         }
     }
 
