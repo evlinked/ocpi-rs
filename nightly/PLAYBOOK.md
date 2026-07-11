@@ -10,6 +10,12 @@ Implement the full OCPI standard (all versions) in Rust, one issue per night,
 following the milestones in [`../README.md`](../README.md). OCPI **2.2.1** is
 the primary target; 2.1.1, 2.2, 2.0, and 2.3.0 follow.
 
+**This is an independent, spec-driven library.** Priority is set by the OCPI
+specification (upstream: <https://github.com/ocpi/ocpi>) and the milestone
+roadmap — **never** by any downstream consumer or external project. Grooming
+means diffing the spec against the crates, not asking what some application
+needs. The library stands alone and is judged only against the standard.
+
 ## The loop (each night)
 
 1. **Learn.** Read this file, `LEARNINGS.md`, and the last `JOURNAL.md` entry.
@@ -54,8 +60,8 @@ third-party issue without the owner's explicit go-ahead.
   drop data.
 - Role is declared in the handshake, never inferred. Fields absent from the spec
   stay unwired.
-- The vendored spec under `../specs/ocpi/` is the source of truth. When in doubt,
-  read the asciidoc.
+- The OCPI spec is the source of truth (upstream <https://github.com/ocpi/ocpi>;
+  vendored offline under `../specs/ocpi/`). When in doubt, read the asciidoc.
 
 ## Guardrails
 
