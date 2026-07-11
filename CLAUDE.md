@@ -1,3 +1,51 @@
+# ocpi-rs — project charter
+
+**ocpi-rs is an independent, standalone OCPI SDK.** It implements the Open
+Charge Point Interface as a reusable Rust library — typed models, an async
+client (sender role), and server-side handler traits (receiver role) — for
+every OCPI version. It is developed **on its own merits, to the standard**, and
+is not built or prioritized for any particular application.
+
+## Source of truth: the OCPI specification
+
+The spec is the authority — not any consuming project:
+
+- **Canonical upstream spec:** <https://github.com/ocpi/ocpi> (see also
+  [evroaming.org](https://evroaming.org)). Use the release matching the version
+  you are implementing (2.2.1 is the primary target).
+- **Vendored copies** for offline reference live under
+  [`specs/ocpi/<version>/`](specs/). When the vendored asciidoc and this repo
+  disagree, **the spec wins**.
+
+Port spec semantics faithfully, but write idiomatic Rust (serde, `thiserror`,
+strong types over stringly-typed). The unsupported case is rejected with an
+explicit OCPI `status_code`, **never** silently dropped.
+
+## Priority is set by the spec, never by a consumer
+
+Advance the **lowest incomplete milestone first** (see the roadmap in
+[`README.md`](README.md)), with OCPI **2.2.1** as the primary production target,
+then 2.1.1, 2.2, 2.3.0, and a 3.0 forward-scaffold. Grooming (filling the issue
+tracker) is done by **diffing the OCPI spec's modules against the current
+crates** — not by asking what any downstream project needs.
+
+This library has **no dependency on, and takes no direction from, any specific
+application** (it is not driven by, and does not special-case, any hub, roaming
+platform, station backend, or other consumer). It stands alone and is judged
+only against the standard. Any real-world usage is illustrative, never a
+priority driver.
+
+## Definition of done
+
+Every module/type/handler ships with its tests (serde round-trip + spec example
+payloads as fixtures). CI must stay green: `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`. No
+`unsafe` in the type layer (`#![forbid(unsafe_code)]`). Keep diffs reviewable
+(≤ ~500 changed LOC), one issue per PR, and keep the README milestone checklist
++ support matrix in sync when an item lands.
+
+---
+
 # gstack
 
 For all web browsing, use the `/browse` skill from gstack. Never use `mcp__claude-in-chrome__*` tools.

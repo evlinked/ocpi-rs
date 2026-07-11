@@ -19,6 +19,7 @@ OCPI is the open protocol that lets EV charging networks roam: a Charge Point Op
 - **Correctness**: types follow the spec; the unsupported case is rejected with an explicit OCPI `status_code`, never silently dropped.
 - **Reusability**: a clean SDK (types + client + server traits) you can embed in a CPO or eMSP backend.
 - **Portability**: small static binaries, `rustls` by default (no system OpenSSL).
+- **Independent & spec-driven**: a standalone library developed to the [OCPI standard](https://github.com/ocpi/ocpi) itself — not to any single application's needs. Priority follows the specification and the milestone roadmap below, never a downstream consumer.
 
 ## Scope & Non-Goals
 
@@ -104,7 +105,13 @@ This repo develops itself. A nightly Claude **remote routine** picks one owner-a
 
 ## Specifications
 
-The OCPI specs are vendored under [`specs/`](specs/) for reference. They are © EV Roaming Foundation and are **not** covered by this project's MIT license — see [`specs/NOTICE.md`](specs/NOTICE.md).
+The **canonical, upstream OCPI specification is the source of truth**:
+<https://github.com/ocpi/ocpi> (use the release matching the version you are
+implementing; see also [evroaming.org](https://evroaming.org)). For offline
+reference, the specs are vendored under [`specs/`](specs/) — when a vendored
+asciidoc and this repo disagree, the spec wins. The specs are © EV Roaming
+Foundation and are **not** covered by this project's MIT license — see
+[`specs/NOTICE.md`](specs/NOTICE.md).
 
 ## License
 
