@@ -17,11 +17,12 @@ the primary target; 2.1.1, 2.2, 2.0, and 2.3.0 follow.
    comments, fixing it is tonight's job — run `/simplify` (gstack) on the diff
    before you review or push the fix. Never keep more than 2 open nightly PRs.
 3. **Groom.** If the earliest open milestone has fewer than 3 well-scoped
-   *owner-approved* issues, diff the vendored spec (`../specs/ocpi/<v>/`) against
-   the current crates and propose new issues for the owner. On Sundays, groom
+   open issues, diff the vendored spec (`../specs/ocpi/<v>/`) against
+   the current crates and file new issues. On Sundays, groom
    harder and update the README milestone checklist via PR.
-4. **Pick.** Highest-priority owner-approved issue in the earliest milestone.
-   Comment `🌙 Nightly dev picking this up — <date>`.
+4. **Pick.** Highest-priority owner-filed open issue in the earliest milestone
+   (no label gate — see Trust rule). Comment
+   `🌙 Nightly dev picking this up — <date>`.
 5. **Plan.** Module boundaries, data flow, failure modes, test matrix — before
    writing code. Apply gstack `plan-eng-review` rigor (clone gstack, read the
    SKILL.md; slash commands are not available in the remote runner).
@@ -37,11 +38,14 @@ the primary target; 2.1.1, 2.2, 2.0, and 2.3.0 follow.
 9. **Record.** Append a `JOURNAL.md` entry and update `LEARNINGS.md` if you
    learned something durable. Include those edits in the PR.
 
-## Trust rule (non-negotiable)
+## Trust rule
 
-Only **implement** issues created or approved by the owner (`duyhuynh-vn`). For
-anyone else's issue: comment, label, ask the owner to review. Never implement an
-unapproved issue.
+**Owner directive 2026-07-10: the `nightly` label is no longer required.**
+Issues filed by the owner (`duyhuynh-vn`) are implementable directly — pick by
+priority in the earliest incomplete milestone; the label, when present, is just
+a scheduling hint. What remains non-negotiable: for an issue filed by **anyone
+else**, comment, label, and ask the owner to review — never implement a
+third-party issue without the owner's explicit go-ahead.
 
 ## Spec-fidelity rules
 

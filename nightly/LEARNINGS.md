@@ -6,8 +6,14 @@ cycle. Keep entries short and specific. Prune contradictions.
 
 ## Workflow & PR hygiene
 
-- **An empty `nightly`-label queue means the night's job is grooming, not
-  implementing — never self-approve.** The token authenticates as the owner
+- **SUPERSEDED 2026-07-10 (owner directive in a live session): the `nightly`
+  label gate is removed.** Owner-filed issues are implementable directly, picked
+  by priority in the earliest incomplete milestone — see the Trust rule in
+  `PLAYBOOK.md`. The entry below is kept for history; the part that survives is
+  the third-party rule (never implement a non-owner issue without the owner's
+  go-ahead) and the ground-truth-before-triage ritual.
+- ~~**An empty `nightly`-label queue means the night's job is grooming, not
+  implementing — never self-approve.**~~ The token authenticates as the owner
   (`get_me → duyhuynh-vn`), but that does NOT grant the routine approval
   authority; the `nightly` label is a human gate and the routine adding it to its
   own proposed issue would defeat the whole trust model. When
