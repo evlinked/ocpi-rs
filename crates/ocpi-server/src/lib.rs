@@ -86,6 +86,11 @@ use ocpi_types::v2_1_1::{
 // connector). Only that one type is aliased; every other 2.2 Commands type is the
 // re-exported 2.2.1 type. See [`Commands22Config`] / [`http::commands_2_2_router`].
 use ocpi_types::v2_2::StartSession as StartSession22;
+// The OCPI 2.3.0 Payments objects served by the CPO Receiver
+// [`http::payments_2_3_0_router`]. Payments is a new-in-2.3.0 module with no
+// 2.2.1 predecessor, so these are `v2_3_0`-local types (no alias needed — the
+// names do not clash with any earlier-version import). See [`Payments230Config`].
+use ocpi_types::v2_3_0::payments::{FinancialAdviceConfirmation, Terminal};
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -5296,6 +5301,226 @@ fn json_merge(base: &mut ocpi_types::serde_json::Value, patch: ocpi_types::serde
     }
 }
 
+// ── Payments230Handler (OCPI 2.3.0) ─────────────────────────────────────────────
+
+/// Handles the OCPI **2.3.0** _Payments_ module **Receiver** interface — the CPO
+/// side (`specs/ocpi/2.3.0/mod_payments.asciidoc` §400).
+///
+/// Payments is the direct-payment module new in 2.3.0 (no 2.2.1 predecessor): a
+/// Payment Terminal Provider (**PTP**) owns physical [`Terminal`]s and, after a
+/// capture, pushes a [`FinancialAdviceConfirmation`] to the CPO. This trait is
+/// the **CPO Receiver** the spec asks a CPO built on `ocpi-rs` to expose — the
+/// module is asymmetric, so the CPO is the *Receiver* while the PTP is the
+/// *Sender* (the mirror of most modules).
+///
+/// The four Receiver endpoints (`§404` Terminals, `§414` Financial Advice):
+///
+/// - `GET  payments/terminals/{terminal_id}` — retrieve a [`Terminal`].
+/// - `POST payments/terminals` — create a [`Terminal`] in the CPO store.
+/// - `GET  payments/financial-advice-confirmations/{id}` — retrieve a
+///   [`FinancialAdviceConfirmation`].
+/// - `POST payments/financial-advice-confirmations` — create a
+///   [`FinancialAdviceConfirmation`] in the CPO store.
+///
+/// ## The trust boundary
+///
+/// `Terminal.terminal_id` and `FinancialAdviceConfirmation.id` are
+/// [`CiString36`](ocpi_types::common::CiString36), so an over-length or
+/// non-printable identifier pushed to a `POST` route is **rejected on
+/// deserialize** by the axum `Json` extractor before it ever reaches the store —
+/// the same server-side guard the 2.2 CDRs/Commands/Locations receivers enforce.
+/// Faithful to the crate's core promise: *the unsupported case is rejected
+/// explicitly, never silently mangled.*
+///
+/// The PTP-side **Sender** interface (the CPO→PTP client getters) is the
+/// remaining slice of the tracking issue and is not part of this trait.
+///
+/// Spec: OCPI 2.3.0 — *Payments* module (§400 Receiver Interface),
+/// `specs/ocpi/2.3.0/mod_payments.asciidoc`.
+#[allow(async_fn_in_trait)]
+pub trait Payments230Handler {
+    /// Retrieve a [`Terminal`] by its id — `GET payments/terminals/{terminal_id}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when no terminal with that id exists.
+    async fn get_terminal(&self, terminal_id: &str) -> Result<Terminal, ServerError>;
+
+    /// Create a [`Terminal`] in the CPO store — `POST payments/terminals`.
+    ///
+    /// The returned `String` is the absolute URL at which the stored terminal
+    /// can be retrieved (used for the HTTP `Location` response header).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] on storage failure.
+    async fn post_terminal(&self, terminal: Terminal) -> Result<String, ServerError>;
+
+    /// Retrieve a [`FinancialAdviceConfirmation`] by its id —
+    /// `GET payments/financial-advice-confirmations/{id}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when no confirmation with that id
+    /// exists.
+    async fn get_financial_advice_confirmation(
+        &self,
+        id: &str,
+    ) -> Result<FinancialAdviceConfirmation, ServerError>;
+
+    /// Create a [`FinancialAdviceConfirmation`] in the CPO store —
+    /// `POST payments/financial-advice-confirmations`.
+    ///
+    /// The returned `String` is the absolute URL at which the stored
+    /// confirmation can be retrieved (used for the HTTP `Location` response
+    /// header).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] on storage failure.
+    async fn post_financial_advice_confirmation(
+        &self,
+        confirmation: FinancialAdviceConfirmation,
+    ) -> Result<String, ServerError>;
+}
+
+// ── Payments230Config (OCPI 2.3.0) ───────────────────────────────────────────────
+
+/// Thread-safe in-memory **OCPI 2.3.0** Payments store for use with
+/// [`http::payments_2_3_0_router`].
+///
+/// Mirrors [`Cdrs22Config`] but holds the two Payments Receiver objects:
+/// [`Terminal`]s keyed by `terminal_id` and [`FinancialAdviceConfirmation`]s
+/// keyed by `id`. The `base_url` (e.g. `"https://example.com/ocpi/cpo/2.3.0"`)
+/// is prepended to construct the `Location` header returned by the two `POST`
+/// routes.
+pub struct Payments230Config {
+    base_url: String,
+    terminals: std::sync::RwLock<std::collections::HashMap<String, Terminal>>,
+    confirmations:
+        std::sync::RwLock<std::collections::HashMap<String, FinancialAdviceConfirmation>>,
+}
+
+impl std::fmt::Debug for Payments230Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Payments230Config")
+            .field(
+                "terminal_count",
+                &self.terminals.read().map(|m| m.len()).unwrap_or(0),
+            )
+            .field(
+                "confirmation_count",
+                &self.confirmations.read().map(|m| m.len()).unwrap_or(0),
+            )
+            .field("base_url", &self.base_url)
+            .finish()
+    }
+}
+
+impl Payments230Config {
+    /// Create an empty 2.3.0 Payments store.
+    ///
+    /// `base_url` is used to build the `Location` header on the two `POST`
+    /// routes (e.g. `"https://example.com/ocpi/cpo/2.3.0"`).
+    #[must_use]
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            terminals: std::sync::RwLock::new(std::collections::HashMap::new()),
+            confirmations: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Construct the retrieval URL for a terminal by its id.
+    fn terminal_url(&self, terminal_id: &str) -> String {
+        format!(
+            "{}/payments/terminals/{terminal_id}",
+            self.base_url.trim_end_matches('/')
+        )
+    }
+
+    /// Construct the retrieval URL for a financial-advice confirmation by its id.
+    fn confirmation_url(&self, id: &str) -> String {
+        format!(
+            "{}/payments/financial-advice-confirmations/{id}",
+            self.base_url.trim_end_matches('/')
+        )
+    }
+
+    /// Store a terminal and return its retrieval URL.
+    pub fn store_terminal(&self, terminal: Terminal) -> String {
+        let id = terminal.terminal_id.as_str().to_string();
+        let url = self.terminal_url(&id);
+        self.terminals
+            .write()
+            .expect("lock not poisoned")
+            .insert(id, terminal);
+        url
+    }
+
+    /// Retrieve a terminal by its id.
+    #[must_use]
+    pub fn get_terminal(&self, terminal_id: &str) -> Option<Terminal> {
+        self.terminals
+            .read()
+            .expect("lock not poisoned")
+            .get(terminal_id)
+            .cloned()
+    }
+
+    /// Store a financial-advice confirmation and return its retrieval URL.
+    pub fn store_confirmation(&self, confirmation: FinancialAdviceConfirmation) -> String {
+        let id = confirmation.id.as_str().to_string();
+        let url = self.confirmation_url(&id);
+        self.confirmations
+            .write()
+            .expect("lock not poisoned")
+            .insert(id, confirmation);
+        url
+    }
+
+    /// Retrieve a financial-advice confirmation by its id.
+    #[must_use]
+    pub fn get_confirmation(&self, id: &str) -> Option<FinancialAdviceConfirmation> {
+        self.confirmations
+            .read()
+            .expect("lock not poisoned")
+            .get(id)
+            .cloned()
+    }
+}
+
+impl Default for Payments230Config {
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
+#[allow(async_fn_in_trait)]
+impl Payments230Handler for Payments230Config {
+    async fn get_terminal(&self, terminal_id: &str) -> Result<Terminal, ServerError> {
+        self.get_terminal(terminal_id).ok_or(ServerError::NotFound)
+    }
+
+    async fn post_terminal(&self, terminal: Terminal) -> Result<String, ServerError> {
+        Ok(self.store_terminal(terminal))
+    }
+
+    async fn get_financial_advice_confirmation(
+        &self,
+        id: &str,
+    ) -> Result<FinancialAdviceConfirmation, ServerError> {
+        self.get_confirmation(id).ok_or(ServerError::NotFound)
+    }
+
+    async fn post_financial_advice_confirmation(
+        &self,
+        confirmation: FinancialAdviceConfirmation,
+    ) -> Result<String, ServerError> {
+        Ok(self.store_confirmation(confirmation))
+    }
+}
+
 // ── axum integration ──────────────────────────────────────────────────────────
 
 #[cfg(feature = "axum")]
@@ -5331,8 +5556,9 @@ pub mod http {
         ChargingProfilesConfig, ChargingProfilesHandler, Commands2111Config, Commands2111Handler,
         Commands22Config, Commands22Handler, CommandsConfig, CommandsHandler,
         Credentials2111Config, CredentialsConfig, HubClientInfoConfig, Locations2111Config,
-        Locations22Config, LocationsConfig, ServerError, Sessions2111Config, SessionsConfig,
-        Tariffs2111Config, TariffsConfig, Tokens2111Config, TokensConfig, VersionsConfig,
+        Locations22Config, LocationsConfig, Payments230Config, ServerError, Sessions2111Config,
+        SessionsConfig, Tariffs2111Config, TariffsConfig, Tokens2111Config, TokensConfig,
+        VersionsConfig,
     };
     // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
     use ocpi_types::v2_1_1::Credentials as Credentials2111;
@@ -5367,6 +5593,9 @@ pub mod http {
     // `connector_id`. Every other 2.2 command body is the wire-identical 2.2.1
     // type already imported above.
     use ocpi_types::v2_2::StartSession as StartSession22;
+    // The OCPI 2.3.0 Payments objects served by the CPO Receiver
+    // `payments_2_3_0_router` — a new-in-2.3.0 module with no 2.2.1 predecessor.
+    use ocpi_types::v2_3_0::payments::{FinancialAdviceConfirmation, Terminal};
 
     // ── Versions ──────────────────────────────────────────────────────────────
 
@@ -6274,6 +6503,113 @@ pub mod http {
         let mut response = (
             StatusCode::CREATED,
             Json(OcpiResponse::<Cdr22>::success_empty()),
+        )
+            .into_response();
+        if let Ok(v) = location_url.parse() {
+            response.headers_mut().insert("location", v);
+        }
+        response
+    }
+
+    // ── Payments (OCPI 2.3.0, CPO Receiver) ─────────────────────────────────────
+
+    /// Build an axum router for the OCPI **2.3.0** _Payments_ module **CPO
+    /// Receiver** interface (`specs/ocpi/2.3.0/mod_payments.asciidoc` §400).
+    ///
+    /// Exposes the four Receiver endpoints a CPO built on `ocpi-rs` presents to a
+    /// PTP:
+    /// - `GET  /payments/terminals/{terminal_id}` — retrieve a [`Terminal`].
+    /// - `POST /payments/terminals` — create a [`Terminal`]; responds
+    ///   `201 Created` with a `Location` header pointing to the stored terminal.
+    /// - `GET  /payments/financial-advice-confirmations/{id}` — retrieve a
+    ///   [`FinancialAdviceConfirmation`].
+    /// - `POST /payments/financial-advice-confirmations` — create a
+    ///   [`FinancialAdviceConfirmation`]; responds `201 Created` with a
+    ///   `Location` header.
+    ///
+    /// Terminal / confirmation identifiers are `CiString36`, so an over-length or
+    /// non-printable id on a `POST` body is rejected on deserialize by the `Json`
+    /// extractor before it reaches the store.
+    ///
+    /// OCPI routing headers (`OCPI-from/to-party-id/country-code`) are accepted
+    /// on all routes; they are not enforced at this layer. The PTP-side **Sender**
+    /// interface (the CPO→PTP client getters) is a separate follow-up slice.
+    pub fn payments_2_3_0_router(config: Arc<Payments230Config>) -> Router {
+        Router::new()
+            .route("/payments/terminals", post(payments_2_3_0_post_terminal))
+            .route(
+                "/payments/terminals/{terminal_id}",
+                get(payments_2_3_0_get_terminal),
+            )
+            .route(
+                "/payments/financial-advice-confirmations",
+                post(payments_2_3_0_post_confirmation),
+            )
+            .route(
+                "/payments/financial-advice-confirmations/{id}",
+                get(payments_2_3_0_get_confirmation),
+            )
+            .with_state(config)
+    }
+
+    async fn payments_2_3_0_get_terminal(
+        State(cfg): State<Arc<Payments230Config>>,
+        Path(terminal_id): Path<String>,
+    ) -> Response {
+        match cfg.get_terminal(&terminal_id) {
+            Some(terminal) => Json(OcpiResponse::success(terminal)).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<Terminal>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!("Terminal {terminal_id} not found"),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn payments_2_3_0_post_terminal(
+        State(cfg): State<Arc<Payments230Config>>,
+        Json(terminal): Json<Terminal>,
+    ) -> Response {
+        let location_url = cfg.store_terminal(terminal);
+        let mut response = (
+            StatusCode::CREATED,
+            Json(OcpiResponse::<Terminal>::success_empty()),
+        )
+            .into_response();
+        if let Ok(v) = location_url.parse() {
+            response.headers_mut().insert("location", v);
+        }
+        response
+    }
+
+    async fn payments_2_3_0_get_confirmation(
+        State(cfg): State<Arc<Payments230Config>>,
+        Path(id): Path<String>,
+    ) -> Response {
+        match cfg.get_confirmation(&id) {
+            Some(confirmation) => Json(OcpiResponse::success(confirmation)).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<FinancialAdviceConfirmation>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!("FinancialAdviceConfirmation {id} not found"),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn payments_2_3_0_post_confirmation(
+        State(cfg): State<Arc<Payments230Config>>,
+        Json(confirmation): Json<FinancialAdviceConfirmation>,
+    ) -> Response {
+        let location_url = cfg.store_confirmation(confirmation);
+        let mut response = (
+            StatusCode::CREATED,
+            Json(OcpiResponse::<FinancialAdviceConfirmation>::success_empty()),
         )
             .into_response();
         if let Ok(v) = location_url.parse() {
@@ -11266,5 +11602,182 @@ mod tests {
             .put_connector("NL", "CPO", "LOC1", "NOPE", make_connector("1", ts))
             .unwrap_err();
         assert!(matches!(err, ServerError::NotFound));
+    }
+
+    // ── Payments230Config tests (OCPI 2.3.0, CPO Receiver) ────────────────────
+
+    fn make_terminal(terminal_id: &str, ts: DateTime<Utc>) -> Terminal {
+        Terminal {
+            terminal_id: CiString36::try_from(terminal_id).unwrap(),
+            customer_reference: Some(CiString36::try_from("CUST-1").unwrap()),
+            party_id: Some(CiString3::try_from("CPO").unwrap()),
+            country_code: Some(CiString2::try_from("NL").unwrap()),
+            address: Some("Test St 1".into()),
+            city: Some("Amsterdam".into()),
+            postal_code: Some("1000 AA".into()),
+            state: None,
+            country: Some("NLD".into()),
+            coordinates: Some(GeoLocation {
+                latitude: "52.370216".into(),
+                longitude: "4.895168".into(),
+            }),
+            invoice_base_url: Some(
+                ocpi_types::Url::try_from("https://ptp.example.com/invoices").unwrap(),
+            ),
+            invoice_creator: Some(ocpi_types::v2_3_0::payments::InvoiceCreator::Cpo),
+            reference: None,
+            location_ids: vec![CiString36::try_from("LOC1").unwrap()],
+            evse_uids: vec![CiString36::try_from("EVSE1").unwrap()],
+            last_updated: ts,
+        }
+    }
+
+    fn make_confirmation(id: &str, ts: DateTime<Utc>) -> FinancialAdviceConfirmation {
+        use ocpi_types::common::CiString255;
+        FinancialAdviceConfirmation {
+            id: CiString36::try_from(id).unwrap(),
+            authorization_reference: CiString36::try_from("AUTH-REF-1").unwrap(),
+            total_costs: ocpi_types::common::Price {
+                excl_vat: 10.00,
+                incl_vat: Some(12.10),
+            },
+            currency: CiString3::try_from("EUR").unwrap(),
+            eft_data: vec![CiString255::try_from("IBAN NL00BANK0123456789").unwrap()],
+            capture_status_code: ocpi_types::v2_3_0::payments::CaptureStatusCode::Success,
+            capture_status_message: None,
+            last_updated: ts,
+        }
+    }
+
+    #[test]
+    fn payments_230_config_terminal_store_and_get_roundtrip() {
+        let cfg = Payments230Config::new("https://example.com/ocpi/cpo/2.3.0");
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let url = cfg.store_terminal(make_terminal("TERM-001", ts));
+        assert_eq!(
+            url,
+            "https://example.com/ocpi/cpo/2.3.0/payments/terminals/TERM-001"
+        );
+        let got = cfg.get_terminal("TERM-001").unwrap();
+        assert_eq!(got.terminal_id.as_str(), "TERM-001");
+        // The 2.3.0 Location assignment survives the store round-trip.
+        assert_eq!(got.location_ids[0].as_str(), "LOC1");
+        assert_eq!(got.evse_uids[0].as_str(), "EVSE1");
+    }
+
+    #[test]
+    fn payments_230_config_confirmation_store_and_get_roundtrip() {
+        let cfg = Payments230Config::new("https://example.com/ocpi/cpo/2.3.0");
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let url = cfg.store_confirmation(make_confirmation("FAC-001", ts));
+        assert_eq!(
+            url,
+            "https://example.com/ocpi/cpo/2.3.0/payments/financial-advice-confirmations/FAC-001"
+        );
+        let got = cfg.get_confirmation("FAC-001").unwrap();
+        assert_eq!(got.id.as_str(), "FAC-001");
+        // The authorization_reference correlating the capture to the session
+        // survives the store round-trip.
+        assert_eq!(got.authorization_reference.as_str(), "AUTH-REF-1");
+    }
+
+    #[test]
+    fn payments_230_config_get_missing_returns_none() {
+        let cfg = Payments230Config::new("https://example.com/ocpi/cpo/2.3.0");
+        assert!(cfg.get_terminal("MISSING").is_none());
+        assert!(cfg.get_confirmation("MISSING").is_none());
+    }
+
+    #[tokio::test]
+    async fn payments_230_handler_terminal_post_then_get() {
+        let cfg = Payments230Config::new("https://example.com/ocpi/cpo/2.3.0");
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let url = Payments230Handler::post_terminal(&cfg, make_terminal("TERM-777", ts))
+            .await
+            .unwrap();
+        assert_eq!(
+            url,
+            "https://example.com/ocpi/cpo/2.3.0/payments/terminals/TERM-777"
+        );
+        let got = Payments230Handler::get_terminal(&cfg, "TERM-777")
+            .await
+            .unwrap();
+        assert_eq!(got.terminal_id.as_str(), "TERM-777");
+        // A missing terminal is a NotFound, not a panic.
+        assert!(matches!(
+            Payments230Handler::get_terminal(&cfg, "NOPE").await,
+            Err(ServerError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn payments_230_handler_confirmation_post_then_get() {
+        let cfg = Payments230Config::new("https://example.com/ocpi/cpo/2.3.0");
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let url = Payments230Handler::post_financial_advice_confirmation(
+            &cfg,
+            make_confirmation("FAC-9", ts),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            url,
+            "https://example.com/ocpi/cpo/2.3.0/payments/financial-advice-confirmations/FAC-9"
+        );
+        let got = Payments230Handler::get_financial_advice_confirmation(&cfg, "FAC-9")
+            .await
+            .unwrap();
+        assert_eq!(got.id.as_str(), "FAC-9");
+        assert!(matches!(
+            Payments230Handler::get_financial_advice_confirmation(&cfg, "NOPE").await,
+            Err(ServerError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn payments_230_terminal_roundtrips_through_json_unmangled() {
+        // A spec-shaped Terminal round-trips through the wire form the POST route
+        // deserializes, keeping every optional it carries.
+        use ocpi_types::serde_json;
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let terminal = make_terminal("TERM-001", ts);
+        let json = serde_json::to_string(&terminal).unwrap();
+        let back: Terminal = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, terminal);
+    }
+
+    #[test]
+    fn payments_230_confirmation_capture_status_variants_roundtrip() {
+        // A SUCCESS and a FAILED confirmation both POST/GET back unmangled — the
+        // two capture outcomes the CPO must be able to land.
+        use ocpi_types::serde_json;
+        use ocpi_types::v2_3_0::payments::CaptureStatusCode;
+        let ts = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        for status in [CaptureStatusCode::Success, CaptureStatusCode::Failed] {
+            let mut confirmation = make_confirmation("FAC-1", ts);
+            confirmation.capture_status_code = status;
+            let json = serde_json::to_string(&confirmation).unwrap();
+            let back: FinancialAdviceConfirmation = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.capture_status_code, status);
+            assert_eq!(back, confirmation);
+        }
+    }
+
+    #[test]
+    fn payments_230_over_length_terminal_id_is_rejected_on_deserialize() {
+        // The trust boundary: a `terminal_id` longer than CiString36's 36-char
+        // limit is rejected when the POST body is deserialized, before it can
+        // ever reach the store — the same guard the 2.2 receivers enforce.
+        use ocpi_types::serde_json;
+        let too_long = "T".repeat(37);
+        let body = serde_json::json!({
+            "terminal_id": too_long,
+            "last_updated": "2024-06-01T12:00:00Z",
+        });
+        let parsed: Result<Terminal, _> = serde_json::from_value(body);
+        assert!(
+            parsed.is_err(),
+            "an over-length terminal_id must be rejected on deserialize"
+        );
     }
 }
