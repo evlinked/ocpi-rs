@@ -35,6 +35,18 @@ platform, station backend, or other consumer). It stands alone and is judged
 only against the standard. Any real-world usage is illustrative, never a
 priority driver.
 
+### OCPI 2.0 — recognised, not implemented (M7, resolved)
+
+The 2.0 slice of milestone M7 is **done by graceful recognition, not by a type
+surface** ([#182](https://github.com/evlinked/ocpi-rs/issues/182)): 2.0 predates
+the AsciiDoc spec and is not vendored upstream, so the contract is `VersionNumber`
+recognition + version negotiation degrading a 2.0-only partner to an explicit
+`UnsupportedVersion` `status_code` (fence: `negotiate_disjoint_returns_none`).
+**Do not** stand up a `v2_0` type module or a 2.0 support-matrix column against
+the unvendored 2.0 spec — that would be exactly the "guess when the spec is
+ambiguous" failure mode this charter forbids. See
+[`specs/ocpi/2.0/README.md`](specs/ocpi/2.0/README.md).
+
 ## Definition of done
 
 Every module/type/handler ships with its tests (serde round-trip + spec example

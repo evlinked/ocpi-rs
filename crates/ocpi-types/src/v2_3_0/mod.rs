@@ -9,8 +9,8 @@
 //! - a **new Payments module** (Terminal + payment/financial objects) —
 //!   `specs/ocpi/2.3.0/mod_payments.asciidoc`;
 //! - **Locations** gains a [`ParkingType`]-bearing **Parking** object linked to
-//!   the EVSE (with vehicle types), an `accepted_emsps` list on the EVSE, ISO
-//!   15118 Plug-and-Charge compatibility flags on the [`Connector`], a support
+//!   the EVSE (with vehicle types), an `accepted_service_providers` list on the
+//!   EVSE, ISO 15118 Plug-and-Charge flags on the [`Connector`], a support
 //!   telephone number on the [`Location`], and accessibility information —
 //!   `specs/ocpi/2.3.0/mod_locations.asciidoc`;
 //! - **North-American tax** support on Tariffs / CDRs —
@@ -56,12 +56,12 @@
 //!   reworked [`Price`] (`before_taxes` + an itemised [`TaxAmount`] list), the
 //!   load-bearing value types the CDRs / Sessions cost-field forks are written
 //!   against. The Tariffs tax delta uses its own `PriceLimit`, tracked separately.
-//! - **Locations** — slice 1 of #177 (the `locations` submodule): the new
-//!   [`Parking`] object + [`VehicleType`] / [`ParkingDirection`] enums, and the
-//!   [`Location`] fork carrying `parking_places` + `help_phone`. The EVSE
-//!   (`parking` refs / `accepted_service_providers`) and Connector (ISO 15118
-//!   `capabilities`) deltas fork those composites in slice 2, so `Evse` /
-//!   `Connector` stay re-exports for now.
+//! - **Locations** — slices 1 + 2 of #177 (the `locations` submodule): slice 1
+//!   added the new [`Parking`] object + [`VehicleType`] / [`ParkingDirection`]
+//!   enums and the [`Location`] fork (`parking_places` + `help_phone`); slice 2
+//!   forks [`Evse`] (`parking` refs + `accepted_service_providers`) and
+//!   [`Connector`] (ISO 15118 [`ConnectorCapability`] `capabilities`), so those
+//!   two composites are now `v2_3_0`-local, not re-exports.
 //! - **Tariffs** — North-American tax delta implemented (#178): the `tariffs`
 //!   submodule forks [`Tariff`] to carry `tax_included`, tax-aware
 //!   [`PriceLimit`] min/max prices, and `preauthorize_amount`.
@@ -70,9 +70,8 @@
 //!   so their cost fields carry the reworked [`Price`] (`before_taxes` + itemised
 //!   [`TaxAmount`]) instead of the VAT-only 2.2.1 `Price`; the [`Cdr`] embeds the
 //!   2.3.0 [`Tariff`] in its `tariffs` list.
-//! - The EVSE/Connector Locations deltas (slice 2 of #177) and the transport
-//!   wiring for these forked objects are not implemented yet — each lands in its
-//!   own follow-up over this module.
+//! - The transport wiring for these forked objects is not implemented yet — each
+//!   lands in its own follow-up over this module.
 //!
 //! Until a module's full transport (types + client + server) is in place the
 //! README support-matrix 2.3.0 column stays ☐ (planned), not ◑/☑.
@@ -116,13 +115,16 @@ pub use crate::version::{
 mod credentials;
 pub use credentials::{Credentials, CredentialsRole};
 
-// The Locations delta (slice 1 of #177): the new `Parking` object +
-// `VehicleType`/`ParkingDirection` enums and the `Location` fork (adding
-// `parking_places` + `help_phone`); the EVSE- and Connector-level deltas
-// (`parking` refs, `accepted_service_providers`, ISO 15118 connector
-// `capabilities`) fork those composites in the follow-up.
+// The Locations delta (slices 1 + 2 of #177): slice 1 added the new `Parking`
+// object + `VehicleType`/`ParkingDirection` enums and the `Location` fork
+// (`parking_places` + `help_phone`); slice 2 forks the `Evse` (adding `parking`
+// refs + `accepted_service_providers`) and `Connector` (ISO 15118
+// `capabilities`) composites, so those two are no longer re-exports.
 mod locations;
-pub use locations::{Location, Parking, ParkingDirection, VehicleType};
+pub use locations::{
+    Connector, ConnectorCapability, Evse, EvseParking, EvsePosition, Location, Parking,
+    ParkingDirection, VehicleType,
+};
 
 // The North-American tax delta: `Tariff` forks to carry `tax_included`,
 // tax-aware `PriceLimit` min/max prices, and `preauthorize_amount` (#178).
@@ -143,24 +145,23 @@ pub use sessions::Session;
 // ── Functional + configuration module types ───────────────────────────────────
 //
 // Wire-identical to 2.2.1 → plain re-exports. Every 2.3.0-vs-2.2.1 delta
-// (Payments, the Locations Parking/accepted_emsps/15118 additions, the tax
-// fields, the Credentials hub additions) is additive and lands as a
-// `v2_3_0`-local override in a follow-up; until then the full 2.2.1 surface is
-// reachable here unchanged.
+// (Payments, the Locations Parking/accepted_service_providers/15118 additions,
+// the tax fields, the Credentials hub additions) is additive and lands as a
+// `v2_3_0`-local override — the ones that have already landed no longer appear
+// below; every still-wire-identical 2.2.1 type remains reachable here unchanged.
 pub use crate::v2_2_1::{
-    ActiveChargingProfile, ActiveChargingProfileResult, AdditionalGeoLocation, AllowedType,
     AuthMethod, AuthorizationInfo, CancelReservation, Capability, CdrDimension, CdrDimensionType,
     CdrLocation, CdrToken, ChargingPeriod, ChargingPreferences, ChargingPreferencesResponse,
     ChargingProfile, ChargingProfilePeriod, ChargingProfileResponse, ChargingProfileResponseType,
     ChargingProfileResult, ChargingProfileResultType, ChargingRateUnit, ClearProfileResult,
     ClientInfo, CommandResponse, CommandResponseType, CommandResult, CommandResultType,
-    CommandType, ConnectionStatus, Connector, ConnectorFormat, ConnectorType, DayOfWeek,
-    EnergyContract, Evse, ExceptionalPeriod, Facility, Hours, ImageCategory, LocationReferences,
-    ParkingRestriction, ParkingType, PowerType, PriceComponent, ProfileType, PublishTokenType,
-    RegularHours, ReservationRestrictionType, ReserveNow, SessionStatus, SetChargingProfile,
-    SignedData, SignedValue, StartSession, Status, StatusSchedule, StopSession,
-    TariffDimensionType, TariffElement, TariffRestrictions, TariffType, Token, TokenType,
-    UnlockConnector, WhitelistType,
+    CommandType, ConnectionStatus, ConnectorFormat, ConnectorType, DayOfWeek, EnergyContract,
+    ExceptionalPeriod, Facility, Hours, ImageCategory, LocationReferences, ParkingRestriction,
+    ParkingType, PowerType, PriceComponent, ProfileType, PublishTokenType, RegularHours,
+    ReservationRestrictionType, ReserveNow, SessionStatus, SetChargingProfile, SignedData,
+    SignedValue, StartSession, Status, StatusSchedule, StopSession, TariffDimensionType,
+    TariffElement, TariffRestrictions, TariffType, Token, TokenType, UnlockConnector,
+    WhitelistType,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -326,20 +327,19 @@ mod tests {
         // A representative type from each module the 2.3.0 changelog touches (so
         // the guard fires exactly where a future override would): Payments has
         // no re-export yet; the rest are covered below.
-        // `Location` now forks (parking_places + help_phone, slice 1 of #177),
-        // so its identity assertion is dropped; `Evse`/`Connector` stay
-        // re-exports until slice 2 forks them for the EVSE/Connector deltas.
-        let _: fn(crate::v2_2_1::Evse) -> super::Evse = |x| x;
-        let _: fn(crate::v2_2_1::Connector) -> super::Connector = |x| x; // 15118 flags land here
-                                                                         // NB: `Tariff` is no longer asserted here — it is a genuine `v2_3_0`
-                                                                         // fork carrying the North-American tax fields (see `mod tariffs`).
-                                                                         // NB: `Cdr` and `Session` are also no longer asserted — #188 forked
-                                                                         // them so their cost fields carry the reworked tax-itemised `Price`
-                                                                         // (see `mod cdrs` / `mod sessions`).
-                                                                         // NOTE: `Credentials` is intentionally *absent* here — #179 forked it
-                                                                         // into a `v2_3_0`-local override (the `hub_party_id` field), so it is no
-                                                                         // longer an alias of `v2_2_1::Credentials`. `CredentialsRole` stays
-                                                                         // wire-identical and is still covered by the re-export path.
+        // `Location`/`Evse`/`Connector` now all fork: `Location` (parking_places
+        // + help_phone, slice 1 of #177), and `Evse` (parking refs +
+        // accepted_service_providers) / `Connector` (ISO 15118 capabilities,
+        // slice 2 of #177). Their identity assertions are therefore dropped.
+        // NB: `Tariff` is no longer asserted here — it is a genuine `v2_3_0`
+        // fork carrying the North-American tax fields (see `mod tariffs`).
+        // NB: `Cdr` and `Session` are also no longer asserted — #188 forked
+        // them so their cost fields carry the reworked tax-itemised `Price`
+        // (see `mod cdrs` / `mod sessions`).
+        // NOTE: `Credentials` is intentionally *absent* here — #179 forked it
+        // into a `v2_3_0`-local override (the `hub_party_id` field), so it is no
+        // longer an alias of `v2_2_1::Credentials`. `CredentialsRole` stays
+        // wire-identical and is still covered by the re-export path.
         let _: fn(crate::v2_2_1::CredentialsRole) -> super::CredentialsRole = |x| x;
         let _: fn(crate::v2_2_1::Token) -> super::Token = |x| x;
         let _: fn(crate::v2_2_1::StartSession) -> super::StartSession = |x| x;
