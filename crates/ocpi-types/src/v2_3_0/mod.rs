@@ -47,8 +47,11 @@
 //! ## Status of the deltas
 //!
 //! The **Payments** module (the new-module delta) now lands as the `v2_3_0`-local
-//! [`payments`] submodule (#176). The remaining deltas — the Locations
-//! Parking/`accepted_emsps`/15118 additions, the North-American tax fields, and
+//! [`payments`] submodule (#176). The North-American **tax value types** — the
+//! reworked [`Price`] (`before_taxes` + an itemised [`TaxAmount`] list) — now
+//! land too (slice 1 of #188), the load-bearing types the CDRs / Sessions cost
+//! forks are written against. The remaining deltas — the Locations
+//! Parking/`accepted_emsps`/15118 additions, the CDRs/Sessions tax forks, and
 //! the Credentials hub additions — each land in their own follow-up over this
 //! module. Until a module's full transport (types + client + server) is in
 //! place the README support-matrix 2.3.0 column stays ☐ (planned), not ◑/☑.
@@ -61,6 +64,16 @@
 // this release.
 pub mod payments;
 pub use payments::{CaptureStatusCode, FinancialAdviceConfirmation, InvoiceCreator, Terminal};
+
+// ── North-American tax value types (slice 1 of #178 / #188) ────────────────────
+//
+// The 2.3.0 `Price` rework (`before_taxes` + an itemised `TaxAmount` list,
+// replacing the VAT-only `excl_vat`/`incl_vat`) is a genuine wire fork of
+// `crate::common::Price`, so it is a `v2_3_0`-local type. It is the value type
+// the CDRs / Sessions cost-field forks (#188) are written against; the Tariffs
+// tax delta uses its own `PriceLimit` (see `super::tariffs`), not this `Price`.
+mod price;
+pub use price::{Price, TaxAmount};
 
 // ── Version / endpoint layer ──────────────────────────────────────────────────
 //
