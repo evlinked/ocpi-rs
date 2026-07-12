@@ -46,12 +46,18 @@
 //!
 //! ## Status of the deltas
 //!
-//! The **Payments** module (the new-module delta) now lands as the `v2_3_0`-local
-//! [`payments`] submodule (#176). The remaining deltas — the Locations
-//! Parking/`accepted_emsps`/15118 additions, the North-American tax fields, and
-//! the Credentials hub additions — each land in their own follow-up over this
-//! module. Until a module's full transport (types + client + server) is in
-//! place the README support-matrix 2.3.0 column stays ☐ (planned), not ◑/☑.
+//! - **Payments** — implemented (#176): the new-module delta lands as the
+//!   `v2_3_0`-local [`payments`] submodule (`Terminal`,
+//!   `FinancialAdviceConfirmation`, `InvoiceCreator`, `CaptureStatusCode`).
+//! - **Credentials** — implemented (#179): [`credentials::Credentials`] adds the
+//!   optional `hub_party_id` field; [`CredentialsRole`] stays a re-export
+//!   (wire-identical — the 2.3.0 change is only *which* roles a hub lists).
+//! - The Locations Parking/`accepted_emsps`/15118 additions and the
+//!   North-American tax fields are not implemented yet — each lands in its own
+//!   follow-up over this module.
+//!
+//! Until a module's full transport (types + client + server) is in place the
+//! README support-matrix 2.3.0 column stays ☐ (planned), not ◑/☑.
 
 // ── Payments (new in 2.3.0) ───────────────────────────────────────────────────
 //
@@ -74,13 +80,19 @@ pub use crate::version::{
     Endpoint, InterfaceRole, ModuleID, Version, VersionDetails, VersionNumber,
 };
 
-// ── 2.3.0-local module overrides ──────────────────────────────────────────────
+// ── 2.3.0-local delta modules ─────────────────────────────────────────────────
 //
+// Credentials gains the `hub_party_id` field (#179). `CredentialsRole` is
+// re-exported from `credentials` (which itself re-exports the 2.2.1 type) so the
+// two names travel together.
+mod credentials;
+pub use credentials::{Credentials, CredentialsRole};
+
 // The North-American tax delta: `Tariff` forks to carry `tax_included`,
-// tax-aware `PriceLimit` min/max prices, and `preauthorize_amount`. The
-// remaining 2.3.0 deltas (Payments, the Locations Parking/15118/accepted_emsps
-// additions, the Credentials hub party ID, and the reworked tax-bearing `Price`
-// / CDR fields) each land as their own `v2_3_0`-local override in a follow-up.
+// tax-aware `PriceLimit` min/max prices, and `preauthorize_amount` (#178). The
+// remaining 2.3.0 deltas (the Locations Parking/15118/accepted_emsps additions
+// and the reworked tax-bearing `Price` / CDR fields) each land as their own
+// `v2_3_0`-local override in a follow-up.
 mod tariffs;
 pub use tariffs::{PriceLimit, Tariff, TaxIncluded};
 
@@ -99,13 +111,12 @@ pub use crate::v2_2_1::{
     ChargingProfileResponseType, ChargingProfileResult, ChargingProfileResultType,
     ChargingRateUnit, ClearProfileResult, ClientInfo, CommandResponse, CommandResponseType,
     CommandResult, CommandResultType, CommandType, ConnectionStatus, Connector, ConnectorFormat,
-    ConnectorType, Credentials, CredentialsRole, DayOfWeek, EnergyContract, Evse,
-    ExceptionalPeriod, Facility, Hours, ImageCategory, Location, LocationReferences,
-    ParkingRestriction, ParkingType, PowerType, PriceComponent, ProfileType, PublishTokenType,
-    RegularHours, ReservationRestrictionType, ReserveNow, Session, SessionStatus,
-    SetChargingProfile, SignedData, SignedValue, StartSession, Status, StatusSchedule, StopSession,
-    TariffDimensionType, TariffElement, TariffRestrictions, TariffType, Token, TokenType,
-    UnlockConnector, WhitelistType,
+    ConnectorType, DayOfWeek, EnergyContract, Evse, ExceptionalPeriod, Facility, Hours,
+    ImageCategory, Location, LocationReferences, ParkingRestriction, ParkingType, PowerType,
+    PriceComponent, ProfileType, PublishTokenType, RegularHours, ReservationRestrictionType,
+    ReserveNow, Session, SessionStatus, SetChargingProfile, SignedData, SignedValue, StartSession,
+    Status, StatusSchedule, StopSession, TariffDimensionType, TariffElement, TariffRestrictions,
+    TariffType, Token, TokenType, UnlockConnector, WhitelistType,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -272,7 +283,11 @@ mod tests {
                                                                          // NB: `Tariff` is no longer asserted here — it is a genuine `v2_3_0`
                                                                          // fork carrying the North-American tax fields (see `mod tariffs`).
         let _: fn(crate::v2_2_1::Cdr) -> super::Cdr = |x| x; // NA tax fields land here
-        let _: fn(crate::v2_2_1::Credentials) -> super::Credentials = |x| x; // hub party id lands here
+                                                             // NOTE: `Credentials` is intentionally *absent* here — #179 forked it
+                                                             // into a `v2_3_0`-local override (the `hub_party_id` field), so it is no
+                                                             // longer an alias of `v2_2_1::Credentials`. `CredentialsRole` stays
+                                                             // wire-identical and is still covered by the re-export path.
+        let _: fn(crate::v2_2_1::CredentialsRole) -> super::CredentialsRole = |x| x;
         let _: fn(crate::v2_2_1::Session) -> super::Session = |x| x;
         let _: fn(crate::v2_2_1::Token) -> super::Token = |x| x;
         let _: fn(crate::v2_2_1::StartSession) -> super::StartSession = |x| x;
