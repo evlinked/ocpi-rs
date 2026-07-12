@@ -62,6 +62,16 @@ pub use crate::version::{
     Endpoint, InterfaceRole, ModuleID, Version, VersionDetails, VersionNumber,
 };
 
+// ── 2.3.0-local module overrides ──────────────────────────────────────────────
+//
+// The North-American tax delta: `Tariff` forks to carry `tax_included`,
+// tax-aware `PriceLimit` min/max prices, and `preauthorize_amount`. The
+// remaining 2.3.0 deltas (Payments, the Locations Parking/15118/accepted_emsps
+// additions, the Credentials hub party ID, and the reworked tax-bearing `Price`
+// / CDR fields) each land as their own `v2_3_0`-local override in a follow-up.
+mod tariffs;
+pub use tariffs::{PriceLimit, Tariff, TaxIncluded};
+
 // ── Functional + configuration module types ───────────────────────────────────
 //
 // Wire-identical to 2.2.1 → plain re-exports. Every 2.3.0-vs-2.2.1 delta
@@ -82,7 +92,7 @@ pub use crate::v2_2_1::{
     ParkingRestriction, ParkingType, PowerType, PriceComponent, ProfileType, PublishTokenType,
     RegularHours, ReservationRestrictionType, ReserveNow, Session, SessionStatus,
     SetChargingProfile, SignedData, SignedValue, StartSession, Status, StatusSchedule, StopSession,
-    Tariff, TariffDimensionType, TariffElement, TariffRestrictions, TariffType, Token, TokenType,
+    TariffDimensionType, TariffElement, TariffRestrictions, TariffType, Token, TokenType,
     UnlockConnector, WhitelistType,
 };
 
@@ -205,6 +215,32 @@ mod tests {
     }
 
     #[test]
+    fn tariff_2_3_0_forks_to_carry_tax_included() {
+        // The `v2_3_0::Tariff` reached through the module re-export is the North
+        // American tax fork, not the 2.2.1 alias: it carries `tax_included` and
+        // its `min_price` is the tax-aware `PriceLimit`.
+        let json = r#"{
+            "country_code": "CA",
+            "party_id": "EXA",
+            "id": "roundtrip",
+            "currency": "CAD",
+            "tax_included": "NO",
+            "min_price": { "before_taxes": 0.5, "after_taxes": 0.55 },
+            "elements": [
+                {
+                    "price_components": [
+                        { "type": "TIME", "price": 2.0, "step_size": 60 }
+                    ]
+                }
+            ],
+            "last_updated": "2026-07-11T09:00:00Z"
+        }"#;
+        let tariff: super::Tariff = serde_json::from_str(json).unwrap();
+        assert_eq!(tariff.tax_included, super::TaxIncluded::No);
+        assert_eq!(tariff.min_price.unwrap().after_taxes, Some(0.55));
+    }
+
+    #[test]
     fn reuse_types_stay_aliases_of_2_2_1() {
         // Until a genuine 2.3.0 wire-delta override lands (Payments, the
         // Locations Parking/15118/accepted_emsps additions, the tax fields, the
@@ -221,7 +257,8 @@ mod tests {
         let _: fn(crate::v2_2_1::Location) -> super::Location = |x| x; // Locations composite
         let _: fn(crate::v2_2_1::Evse) -> super::Evse = |x| x;
         let _: fn(crate::v2_2_1::Connector) -> super::Connector = |x| x; // 15118 flags land here
-        let _: fn(crate::v2_2_1::Tariff) -> super::Tariff = |x| x; // NA tax fields land here
+                                                                         // NB: `Tariff` is no longer asserted here — it is a genuine `v2_3_0`
+                                                                         // fork carrying the North-American tax fields (see `mod tariffs`).
         let _: fn(crate::v2_2_1::Cdr) -> super::Cdr = |x| x; // NA tax fields land here
         let _: fn(crate::v2_2_1::Credentials) -> super::Credentials = |x| x; // hub party id lands here
         let _: fn(crate::v2_2_1::Session) -> super::Session = |x| x;
