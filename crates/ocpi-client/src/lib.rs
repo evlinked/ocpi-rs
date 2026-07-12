@@ -76,6 +76,11 @@ use ocpi_types::v2_1_1::{
 // The OCPI 2.2 `StartSession` (no `connector_id`) sent by `start_session_2_2`.
 // Every other 2.2 command uses the wire-identical 2.2.1 types imported above.
 use ocpi_types::v2_2::StartSession as StartSession22;
+// The OCPI 2.3.0 Payments objects: a PTP-owned `Terminal` and the
+// `FinancialAdviceConfirmation` a PTP pushes after it captures at the PSP. Both
+// are brand-new 2.3.0 types (no 2.2.1 predecessor), fetched by the PTP-Sender
+// getters below. See `crate::OcpiClient::get_terminals_2_3_0` and friends.
+use ocpi_types::v2_3_0::{FinancialAdviceConfirmation, Terminal};
 use url::Url;
 
 fn token_type_str(t: TokenType) -> &'static str {
@@ -3294,6 +3299,229 @@ impl OcpiClient {
         let envelope: OcpiResponse<Vec<ClientInfo>> = response.json().await?;
         let infos = envelope.data.ok_or(ClientError::EmptyData)?;
         Ok((infos, meta))
+    }
+
+    // ── Payments (2.3.0, PTP Sender) ──────────────────────────────────────────
+
+    /// Fetch a paginated list of **OCPI 2.3.0** payment [`Terminal`]s from a
+    /// PTP's Sender interface (`GET {url}?date_from&date_to&offset&limit`).
+    ///
+    /// `url` is the absolute URL of the PTP's `payments/terminals` sender
+    /// endpoint. `params` carries the `date_from`/`date_to` update window plus
+    /// `offset`/`limit`. Returns the first page of terminals and the
+    /// [`PaginationMeta`] parsed from the `Link` / `X-Total-Count` / `X-Limit`
+    /// response headers; follow `PaginationMeta.next_url` for later pages.
+    ///
+    /// Payments is a functional module, so the OCPI routing headers
+    /// (`OCPI-to/from-party-id/country-code`) are attached when configured, the
+    /// same as every other functional-module sender.
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `GET payments/terminals`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// success envelope carries no `data`.
+    pub async fn get_terminals_2_3_0(
+        &self,
+        url: &str,
+        params: PaginatedParams,
+    ) -> Result<(Vec<Terminal>, PaginationMeta), ClientError> {
+        let mut parsed = url::Url::parse(url)?;
+        if let Some(date_from) = params.date_from {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_from", &date_from.to_rfc3339());
+        }
+        if let Some(date_to) = params.date_to {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_to", &date_to.to_rfc3339());
+        }
+        if let Some(offset) = params.offset {
+            parsed
+                .query_pairs_mut()
+                .append_pair("offset", &offset.to_string());
+        }
+        if let Some(limit) = params.limit {
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .send()
+            .await?
+            .error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<Terminal>> = response.json().await?;
+        let terminals = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((terminals, meta))
+    }
+
+    /// Fetch a single **OCPI 2.3.0** [`Terminal`] by its ID from a PTP's Sender
+    /// interface (`GET {url}/{terminal_id}`).
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `GET payments/terminals/{terminal_id}`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_terminal_2_3_0(
+        &self,
+        url: &str,
+        terminal_id: &str,
+    ) -> Result<Terminal, ClientError> {
+        let endpoint = format!("{}/{terminal_id}", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Terminal> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Fetch a paginated list of **OCPI 2.3.0** [`FinancialAdviceConfirmation`]s
+    /// from a PTP's Sender interface
+    /// (`GET {url}?date_from&date_to&offset&limit`).
+    ///
+    /// `url` is the absolute URL of the PTP's
+    /// `payments/financial-advice-confirmations` sender endpoint. Returns the
+    /// first page plus the [`PaginationMeta`] parsed from the response headers.
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `GET payments/financial-advice-confirmations`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// success envelope carries no `data`.
+    pub async fn get_financial_advice_confirmations_2_3_0(
+        &self,
+        url: &str,
+        params: PaginatedParams,
+    ) -> Result<(Vec<FinancialAdviceConfirmation>, PaginationMeta), ClientError> {
+        let mut parsed = url::Url::parse(url)?;
+        if let Some(date_from) = params.date_from {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_from", &date_from.to_rfc3339());
+        }
+        if let Some(date_to) = params.date_to {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_to", &date_to.to_rfc3339());
+        }
+        if let Some(offset) = params.offset {
+            parsed
+                .query_pairs_mut()
+                .append_pair("offset", &offset.to_string());
+        }
+        if let Some(limit) = params.limit {
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .send()
+            .await?
+            .error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<FinancialAdviceConfirmation>> = response.json().await?;
+        let confirmations = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((confirmations, meta))
+    }
+
+    /// Fetch a single **OCPI 2.3.0** [`FinancialAdviceConfirmation`] by its ID
+    /// from a PTP's Sender interface (`GET {url}/{id}`).
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `GET payments/financial-advice-confirmations/{id}`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_financial_advice_confirmation_2_3_0(
+        &self,
+        url: &str,
+        id: &str,
+    ) -> Result<FinancialAdviceConfirmation, ClientError> {
+        let endpoint = format!("{}/{id}", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<FinancialAdviceConfirmation> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
     }
 }
 
