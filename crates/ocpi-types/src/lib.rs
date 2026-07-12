@@ -28,6 +28,18 @@
 //! Reject the unsupported case explicitly (a distinct [`OcpiStatusCode`])
 //! rather than silently dropping data, and keep field semantics aligned with
 //! the governing OCPI specification.
+//!
+//! **Unknown fields are tolerated, by design.** No type in this crate carries
+//! `#[serde(deny_unknown_fields)]`: an undocumented JSON field is ignored on
+//! deserialize, never rejected. This is a deliberate conformance property —
+//! `specs/ocpi/2.3.0/transport_and_format.asciidoc` ("Non-specified JSON
+//! fields") states a platform *SHALL NOT* reject a payload for carrying fields
+//! it does not recognise, precisely so implementers can extend OCPI. It is the
+//! counterpart to explicit rejection, not a contradiction of it: an unknown
+//! *field* is preserved-by-ignoring, while a malformed value, a missing
+//! required field, or an unknown *enum* value is still rejected. The property is
+//! fenced by `tests/m8_forward_compat_unknown_fields.rs` so a future
+//! `deny_unknown_fields` cannot silently break it.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
