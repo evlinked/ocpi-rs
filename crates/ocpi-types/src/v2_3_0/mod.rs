@@ -46,23 +46,23 @@
 //!
 //! ## Status of the deltas
 //!
-//! The **foundation** slice (#174) landed the alias-by-default re-exports. Each
-//! wire delta lands in its own follow-up over this module:
+//! - **Payments** — implemented (#176): the new-module delta lands as the
+//!   `v2_3_0`-local [`payments`] submodule (`Terminal`,
+//!   `FinancialAdviceConfirmation`, `InvoiceCreator`, `CaptureStatusCode`).
+//! - **Credentials** — implemented (#179): [`credentials::Credentials`] adds the
+//!   optional `hub_party_id` field; [`CredentialsRole`] stays a re-export
+//!   (wire-identical — the 2.3.0 change is only *which* roles a hub lists).
+//! - **Locations** — slice 1 of #177 (the `locations` submodule): the new
+//!   [`Parking`] object + [`VehicleType`] / [`ParkingDirection`] enums, and the
+//!   [`Location`] fork carrying `parking_places` + `help_phone`. The EVSE
+//!   (`parking` refs / `accepted_service_providers`) and Connector (ISO 15118
+//!   `capabilities`) deltas fork those composites in slice 2, so `Evse` /
+//!   `Connector` stay re-exports for now.
+//! - The North-American tax fields are not implemented yet — each lands in its
+//!   own follow-up over this module.
 //!
-//! - **Payments (#176, the `payments` submodule):** the new-module delta —
-//!   `Terminal`, `FinancialAdviceConfirmation`, `InvoiceCreator`,
-//!   `CaptureStatusCode`, keyed by the shared `ModuleID::Payments`.
-//! - **Locations (slice 1 of #177, implemented here in the `locations`
-//!   submodule):** the new [`Parking`] object + [`VehicleType`] /
-//!   [`ParkingDirection`] enums, and the [`Location`] fork carrying
-//!   `parking_places` + `help_phone`. The EVSE (`parking` refs /
-//!   `accepted_service_providers`) and Connector (ISO 15118 `capabilities`)
-//!   deltas fork those composites in slice 2, so `Evse` / `Connector` stay
-//!   re-exports for now.
-//!
-//! The remaining deltas (North-American tax, the Credentials hub additions)
-//! each land as their own `v2_3_0`-local override. Until a module's deltas are
-//! fully wired its README support-matrix 2.3.0 cell stays ☐/◑.
+//! Until a module's full transport (types + client + server) is in place the
+//! README support-matrix 2.3.0 column stays ☐ (planned), not ◑/☑.
 
 // ── Payments (new in 2.3.0) ───────────────────────────────────────────────────
 //
@@ -85,13 +85,19 @@ pub use crate::version::{
     Endpoint, InterfaceRole, ModuleID, Version, VersionDetails, VersionNumber,
 };
 
-// ── Locations delta (slice 1 of #177) ─────────────────────────────────────────
+// ── 2.3.0-local delta modules ─────────────────────────────────────────────────
 //
-// The 2.3.0 Locations additions land as a `v2_3_0`-local override. This slice
-// carries the new `Parking` object + `VehicleType`/`ParkingDirection` enums and
-// the `Location` fork (adding `parking_places` + `help_phone`); the EVSE- and
-// Connector-level deltas (`parking` refs, `accepted_service_providers`, ISO
-// 15118 connector `capabilities`) fork those composites in the follow-up.
+// Credentials gains the `hub_party_id` field (#179). `CredentialsRole` is
+// re-exported from `credentials` (which itself re-exports the 2.2.1 type) so the
+// two names travel together.
+mod credentials;
+pub use credentials::{Credentials, CredentialsRole};
+
+// The Locations delta (slice 1 of #177): the new `Parking` object +
+// `VehicleType`/`ParkingDirection` enums and the `Location` fork (adding
+// `parking_places` + `help_phone`); the EVSE- and Connector-level deltas
+// (`parking` refs, `accepted_service_providers`, ISO 15118 connector
+// `capabilities`) fork those composites in the follow-up.
 mod locations;
 pub use locations::{Location, Parking, ParkingDirection, VehicleType};
 
@@ -110,13 +116,12 @@ pub use crate::v2_2_1::{
     ChargingProfileResponseType, ChargingProfileResult, ChargingProfileResultType,
     ChargingRateUnit, ClearProfileResult, ClientInfo, CommandResponse, CommandResponseType,
     CommandResult, CommandResultType, CommandType, ConnectionStatus, Connector, ConnectorFormat,
-    ConnectorType, Credentials, CredentialsRole, DayOfWeek, EnergyContract, Evse,
-    ExceptionalPeriod, Facility, Hours, ImageCategory, LocationReferences, ParkingRestriction,
-    ParkingType, PowerType, PriceComponent, ProfileType, PublishTokenType, RegularHours,
-    ReservationRestrictionType, ReserveNow, Session, SessionStatus, SetChargingProfile, SignedData,
-    SignedValue, StartSession, Status, StatusSchedule, StopSession, Tariff, TariffDimensionType,
-    TariffElement, TariffRestrictions, TariffType, Token, TokenType, UnlockConnector,
-    WhitelistType,
+    ConnectorType, DayOfWeek, EnergyContract, Evse, ExceptionalPeriod, Facility, Hours,
+    ImageCategory, LocationReferences, ParkingRestriction, ParkingType, PowerType, PriceComponent,
+    ProfileType, PublishTokenType, RegularHours, ReservationRestrictionType, ReserveNow, Session,
+    SessionStatus, SetChargingProfile, SignedData, SignedValue, StartSession, Status,
+    StatusSchedule, StopSession, Tariff, TariffDimensionType, TariffElement, TariffRestrictions,
+    TariffType, Token, TokenType, UnlockConnector, WhitelistType,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -258,7 +263,11 @@ mod tests {
         let _: fn(crate::v2_2_1::Connector) -> super::Connector = |x| x; // 15118 flags land here
         let _: fn(crate::v2_2_1::Tariff) -> super::Tariff = |x| x; // NA tax fields land here
         let _: fn(crate::v2_2_1::Cdr) -> super::Cdr = |x| x; // NA tax fields land here
-        let _: fn(crate::v2_2_1::Credentials) -> super::Credentials = |x| x; // hub party id lands here
+                                                             // NOTE: `Credentials` is intentionally *absent* here — #179 forked it
+                                                             // into a `v2_3_0`-local override (the `hub_party_id` field), so it is no
+                                                             // longer an alias of `v2_2_1::Credentials`. `CredentialsRole` stays
+                                                             // wire-identical and is still covered by the re-export path.
+        let _: fn(crate::v2_2_1::CredentialsRole) -> super::CredentialsRole = |x| x;
         let _: fn(crate::v2_2_1::Session) -> super::Session = |x| x;
         let _: fn(crate::v2_2_1::Token) -> super::Token = |x| x;
         let _: fn(crate::v2_2_1::StartSession) -> super::StartSession = |x| x;

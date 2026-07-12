@@ -132,6 +132,10 @@ impl<'de, const MAX: usize> Deserialize<'de> for CiString<MAX> {
 pub type CiString2 = CiString<2>;
 /// `CiString(3)` — eMI3 party identifier and similar 3-char fields.
 pub type CiString3 = CiString<3>;
+/// `CiString(5)` — a country-code + party-ID pair concatenated into one
+/// five-character string (e.g. the OCPI 2.3.0 Credentials `hub_party_id`).
+pub type CiString5 = CiString<5>;
+
 /// `CiString(25)` — telephone numbers (e.g. the 2.3.0 `Location.help_phone`).
 pub type CiString25 = CiString<25>;
 /// `CiString(36)` — UUIDs and similar medium-length identifiers.
