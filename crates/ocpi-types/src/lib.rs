@@ -46,7 +46,7 @@ pub mod v2_3_0;
 
 pub use common::{
     BusinessDetails, CiString, CiString2, CiString255, CiString3, CiString36, CiString39,
-    CiString48, CiString64, DisplayText, EnergyMix, EnergySource, EnergySourceCategory,
+    CiString48, CiString5, CiString64, DisplayText, EnergyMix, EnergySource, EnergySourceCategory,
     EnvironmentalImpact, EnvironmentalImpactCategory, GeoLocation, Image, Price, Role, Url,
 };
 pub use envelope::{OcpiPaged, OcpiResponse};
