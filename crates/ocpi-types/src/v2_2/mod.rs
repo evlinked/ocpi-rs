@@ -61,6 +61,33 @@
 //!   crate already models as unbounded [`String`] — so the 2.2 and 2.2.1
 //!   `SignedData`/`SignedValue` wire shapes are byte-identical in Rust and a
 //!   re-export is the faithful representation.
+//!
+//! ## Wire-identical module reuse — ratified (#171)
+//!
+//! Every 2.2-vs-2.2.1 wire delta is exactly three modules — **CDRs**,
+//! **Commands**, **Locations** — sliced into the `v2_2`-local overrides above.
+//! The other seven modules — **Sessions**, **Tariffs**, **Tokens**,
+//! **ChargingProfiles**, **HubClientInfo** ([`ClientInfo`]), **Versions**
+//! (the role-bearing [`Endpoint`]/[`VersionDetails`] layer), and
+//! **Credentials** — have **no** 2.2-vs-2.2.1 wire difference (the `role`/
+//! `roles` fields and the `OCPI-*` routing headers all arrived *in* 2.2), so
+//! `v2_2` re-exports their 2.2.1 types unchanged.
+//!
+//! Consequently **no thin `_2_2` client/server aliases are minted** for those
+//! seven modules — a 2.2 party drives Sessions/Tariffs/Tokens/ChargingProfiles/
+//! HubClientInfo/Versions/Credentials with the existing 2.2.1 `OcpiClient`
+//! methods and server routers unchanged.
+//! Aliasing identical-typed calls would only imply a difference that does not
+//! exist (the precedent set for the four wire-identical Commands in #166).
+//!
+//! This decision is not merely documented but **enforced**: the `reuse` test
+//! module below carries compile-time type-identity assertions
+//! (`fn(v2_2::T) -> v2_2_1::T = |x| x`, which only typechecks when the two
+//! paths name the *same* nominal type) for a representative type of each of the
+//! seven modules, plus a serde round-trip proving a 2.2 party's `Session`
+//! deserialized through the re-export equals the 2.2.1 `Session` byte-for-byte.
+//! If a future change accidentally forks one of these modules into a
+//! `v2_2`-local type, the identity assertion stops compiling.
 
 // ── Version / endpoint layer ──────────────────────────────────────────────────
 //
@@ -265,5 +292,109 @@ mod tests {
         // their alias assertion.
         let _: fn(crate::v2_2_1::SignedData) -> super::SignedData = |x| x;
         let _: fn(crate::v2_2_1::SignedValue) -> super::SignedValue = |x| x;
+    }
+}
+
+// ── Wire-identical module reuse — ratification (#171) ─────────────────────────
+
+/// Enforces the "wire-identical module reuse" decision the module doc ratifies:
+/// the seven modules with **no** 2.2-vs-2.2.1 wire delta — Sessions, Tariffs,
+/// Tokens, ChargingProfiles, HubClientInfo, Versions, Credentials — are genuine
+/// re-exports of their 2.2.1 types, so a 2.2 party drives them with the existing
+/// 2.2.1 client/server surface and no `_2_2` alias is minted.
+///
+/// The proof is compile-time: each `fn(v2_2::T) -> v2_2_1::T = |x| x` closure
+/// only typechecks when the two paths name the *same* nominal type (Rust does no
+/// subtyping coercion between distinct structs/enums), so it is a zero-cost alias
+/// assertion. The moment a future change forks one of these modules into a
+/// `v2_2`-local override, the corresponding line stops compiling and this is
+/// caught in CI — reuse is *verified*, not merely asserted.
+#[cfg(test)]
+mod reuse {
+    /// Compile-time proof that each `$v22` path is the very same type as its
+    /// `$v221` counterpart — i.e. `v2_2` re-exports it rather than forking it.
+    macro_rules! assert_reuse {
+        ($($v22:ty => $v221:ty),+ $(,)?) => {
+            $(const _: fn($v22) -> $v221 = |x| x;)+
+        };
+    }
+
+    // One representative type per wire-identical module. If any of these ever
+    // needs a genuine 2.2 wire delta, slice it into a `v2_2`-local override (as
+    // CDRs/Commands/Locations were) and drop its line here.
+    assert_reuse! {
+        // Sessions
+        super::Session          => crate::v2_2_1::Session,
+        super::SessionStatus    => crate::v2_2_1::SessionStatus,
+        // Tariffs
+        super::Tariff           => crate::v2_2_1::Tariff,
+        super::TariffElement    => crate::v2_2_1::TariffElement,
+        // Tokens
+        super::Token            => crate::v2_2_1::Token,
+        super::TokenType        => crate::v2_2_1::TokenType,
+        // ChargingProfiles
+        super::ChargingProfile    => crate::v2_2_1::ChargingProfile,
+        super::SetChargingProfile => crate::v2_2_1::SetChargingProfile,
+        super::ActiveChargingProfile => crate::v2_2_1::ActiveChargingProfile,
+        // HubClientInfo
+        super::ClientInfo       => crate::v2_2_1::ClientInfo,
+        super::ConnectionStatus => crate::v2_2_1::ConnectionStatus,
+        // Credentials
+        super::Credentials      => crate::v2_2_1::Credentials,
+        super::CredentialsRole  => crate::v2_2_1::CredentialsRole,
+    }
+
+    // Versions: the role-bearing endpoint/version-details layer arrived in 2.2
+    // and is the shared `crate::version` type (not a per-version fork), so the
+    // 2.2 re-export must be that very type. `crate::v2_2_1` reuses the same
+    // shared layer, so both versions share one representation.
+    assert_reuse! {
+        super::Endpoint       => crate::version::Endpoint,
+        super::VersionDetails => crate::version::VersionDetails,
+    }
+
+    /// A 2.2 party's `Session` rides the existing 2.2.1 transport faithfully:
+    /// the spec "simple start" example (`specs/ocpi/2.2/mod_sessions.asciidoc`
+    /// §Examples) deserialized through the `v2_2` re-export equals the same
+    /// payload deserialized as the 2.2.1 `Session`, and re-serializes to a body
+    /// the 2.2.1 type accepts unchanged — the wire is byte-identical, which is
+    /// why no `get_sessions_2_2` is needed.
+    #[test]
+    fn session_reuse_round_trips_through_2_2_1_type() {
+        // Verbatim the 2.2.1 crate's own "simple start" spec fixture — reused
+        // here to show a 2.2 party parses the very same bytes.
+        let payload = r#"{
+            "country_code": "NL",
+            "party_id": "TNM",
+            "id": "101",
+            "start_date_time": "2020-03-09T10:17:09Z",
+            "kwh": 0.00,
+            "cdr_token": {
+                "country_code": "NL",
+                "party_id": "TNM",
+                "uid": "012345678",
+                "type": "RFID",
+                "contract_id": "NL8ACC12E46L89"
+            },
+            "auth_method": "WHITELIST",
+            "location_id": "LOC1",
+            "evse_uid": "3256",
+            "connector_id": "1",
+            "currency": "EUR",
+            "status": "PENDING",
+            "last_updated": "2020-03-09T10:17:09Z"
+        }"#;
+
+        // Parsed via the 2.2 re-export …
+        let via_2_2: super::Session = serde_json::from_str(payload).unwrap();
+        // … and via the 2.2.1 type directly.
+        let via_2_2_1: crate::v2_2_1::Session = serde_json::from_str(payload).unwrap();
+        // Same type, same value — the reuse is real, not coerced.
+        assert_eq!(via_2_2, via_2_2_1);
+
+        // The 2.2 side re-serializes to a body the 2.2.1 type accepts unchanged.
+        let re_encoded = serde_json::to_string(&via_2_2).unwrap();
+        let round_tripped: crate::v2_2_1::Session = serde_json::from_str(&re_encoded).unwrap();
+        assert_eq!(round_tripped, via_2_2_1);
     }
 }
