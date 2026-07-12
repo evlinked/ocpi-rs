@@ -64,12 +64,15 @@
 //!   `Connector` stay re-exports for now.
 //! - **Tariffs** — North-American tax delta implemented (#178): the `tariffs`
 //!   submodule forks [`Tariff`] to carry `tax_included`, tax-aware
-//!   [`PriceLimit`] min/max prices, and `preauthorize_amount`. The remaining tax
-//!   rework (the reworked `Price` / CDR-and-Session cost fields) lands in its own
-//!   follow-up over this module.
-//! - The CDRs/Sessions tax object forks and the EVSE/Connector Locations
-//!   deltas are not implemented yet — each lands in its own follow-up over
-//!   this module.
+//!   [`PriceLimit`] min/max prices, and `preauthorize_amount`.
+//! - **CDRs / Sessions** — North-American tax rework implemented (#188 slices
+//!   2 & 3): the `cdrs` / `sessions` submodules fork [`Cdr`] and [`Session`]
+//!   so their cost fields carry the reworked [`Price`] (`before_taxes` + itemised
+//!   [`TaxAmount`]) instead of the VAT-only 2.2.1 `Price`; the [`Cdr`] embeds the
+//!   2.3.0 [`Tariff`] in its `tariffs` list.
+//! - The EVSE/Connector Locations deltas (slice 2 of #177) and the transport
+//!   wiring for these forked objects are not implemented yet — each lands in its
+//!   own follow-up over this module.
 //!
 //! Until a module's full transport (types + client + server) is in place the
 //! README support-matrix 2.3.0 column stays ☐ (planned), not ◑/☑.
@@ -122,11 +125,20 @@ mod locations;
 pub use locations::{Location, Parking, ParkingDirection, VehicleType};
 
 // The North-American tax delta: `Tariff` forks to carry `tax_included`,
-// tax-aware `PriceLimit` min/max prices, and `preauthorize_amount` (#178). The
-// remaining 2.3.0 deltas (the reworked tax-bearing `Price` / CDR fields) each
-// land as their own `v2_3_0`-local override in a follow-up.
+// tax-aware `PriceLimit` min/max prices, and `preauthorize_amount` (#178).
 mod tariffs;
 pub use tariffs::{PriceLimit, Tariff, TaxIncluded};
+
+// The North-American tax rework on the cost-bearing objects (#188 slices 2 & 3):
+// `Cdr` and `Session` fork so their cost fields carry the reworked `Price`
+// (`before_taxes` + itemised `taxes`) instead of the VAT-only 2.2.1 `Price`. The
+// `Cdr` also embeds the 2.3.0 `Tariff` (with its `tax_included` flag) in its
+// `tariffs` list. All other sub-objects (`CdrToken`, `CdrLocation`,
+// `ChargingPeriod`, `SignedData`, `SessionStatus`) stay wire-identical re-exports.
+mod cdrs;
+pub use cdrs::Cdr;
+mod sessions;
+pub use sessions::Session;
 
 // ── Functional + configuration module types ───────────────────────────────────
 //
@@ -137,18 +149,18 @@ pub use tariffs::{PriceLimit, Tariff, TaxIncluded};
 // reachable here unchanged.
 pub use crate::v2_2_1::{
     ActiveChargingProfile, ActiveChargingProfileResult, AdditionalGeoLocation, AllowedType,
-    AuthMethod, AuthorizationInfo, CancelReservation, Capability, Cdr, CdrDimension,
-    CdrDimensionType, CdrLocation, CdrToken, ChargingPeriod, ChargingPreferences,
-    ChargingPreferencesResponse, ChargingProfile, ChargingProfilePeriod, ChargingProfileResponse,
-    ChargingProfileResponseType, ChargingProfileResult, ChargingProfileResultType,
-    ChargingRateUnit, ClearProfileResult, ClientInfo, CommandResponse, CommandResponseType,
-    CommandResult, CommandResultType, CommandType, ConnectionStatus, Connector, ConnectorFormat,
-    ConnectorType, DayOfWeek, EnergyContract, Evse, ExceptionalPeriod, Facility, Hours,
-    ImageCategory, LocationReferences, ParkingRestriction, ParkingType, PowerType, PriceComponent,
-    ProfileType, PublishTokenType, RegularHours, ReservationRestrictionType, ReserveNow, Session,
-    SessionStatus, SetChargingProfile, SignedData, SignedValue, StartSession, Status,
-    StatusSchedule, StopSession, TariffDimensionType, TariffElement, TariffRestrictions,
-    TariffType, Token, TokenType, UnlockConnector, WhitelistType,
+    AuthMethod, AuthorizationInfo, CancelReservation, Capability, CdrDimension, CdrDimensionType,
+    CdrLocation, CdrToken, ChargingPeriod, ChargingPreferences, ChargingPreferencesResponse,
+    ChargingProfile, ChargingProfilePeriod, ChargingProfileResponse, ChargingProfileResponseType,
+    ChargingProfileResult, ChargingProfileResultType, ChargingRateUnit, ClearProfileResult,
+    ClientInfo, CommandResponse, CommandResponseType, CommandResult, CommandResultType,
+    CommandType, ConnectionStatus, Connector, ConnectorFormat, ConnectorType, DayOfWeek,
+    EnergyContract, Evse, ExceptionalPeriod, Facility, Hours, ImageCategory, LocationReferences,
+    ParkingRestriction, ParkingType, PowerType, PriceComponent, ProfileType, PublishTokenType,
+    RegularHours, ReservationRestrictionType, ReserveNow, SessionStatus, SetChargingProfile,
+    SignedData, SignedValue, StartSession, Status, StatusSchedule, StopSession,
+    TariffDimensionType, TariffElement, TariffRestrictions, TariffType, Token, TokenType,
+    UnlockConnector, WhitelistType,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -236,37 +248,42 @@ mod tests {
     }
 
     #[test]
-    fn session_round_trips_through_the_2_3_0_re_export() {
-        // A functional object reached through the `v2_3_0` re-export must
-        // deserialize and round-trip exactly as its 2.2.1 source type — the
-        // re-export is transparent, not a shadowing copy.
+    fn session_2_3_0_forks_to_carry_tax_itemised_total_cost() {
+        // The `v2_3_0::Session` reached through the module re-export is the North
+        // American tax fork (#188), not the 2.2.1 alias: its `total_cost` is the
+        // reworked `Price` (`before_taxes` + itemised `taxes`), so a session
+        // carrying that shape parses here but not under `v2_2_1::Session`.
         let json = r#"{
-            "country_code": "NL",
-            "party_id": "ABC",
+            "country_code": "CA",
+            "party_id": "EXA",
             "id": "session-2-3-0",
             "start_date_time": "2026-07-11T09:00:00Z",
             "kwh": 12.5,
             "cdr_token": {
-                "country_code": "NL",
-                "party_id": "ABC",
+                "country_code": "CA",
+                "party_id": "EXA",
                 "uid": "12345",
                 "type": "RFID",
-                "contract_id": "NL-ABC-C12345"
+                "contract_id": "CA-EXA-C12345"
             },
             "auth_method": "WHITELIST",
             "location_id": "LOC1",
             "evse_uid": "EVSE1",
             "connector_id": "1",
-            "currency": "EUR",
+            "currency": "CAD",
+            "total_cost": { "before_taxes": 10.0, "taxes": [ { "name": "GST", "amount": 0.5 } ] },
             "status": "ACTIVE",
             "last_updated": "2026-07-11T09:05:00Z"
         }"#;
-        let via_2_3_0: super::Session = serde_json::from_str(json).unwrap();
-        let via_2_2_1: crate::v2_2_1::Session = serde_json::from_str(json).unwrap();
-        assert_eq!(via_2_3_0, via_2_2_1);
-        let out = serde_json::to_string(&via_2_3_0).unwrap();
+        let session: super::Session = serde_json::from_str(json).unwrap();
+        assert_eq!(session.total_cost.as_ref().unwrap().before_taxes, 10.0);
+        assert_eq!(session.total_cost.as_ref().unwrap().taxes[0].name, "GST");
+        // The tax-itemised `total_cost` is not a valid 2.2.1 Session cost.
+        assert!(serde_json::from_str::<crate::v2_2_1::Session>(json).is_err());
+
+        let out = serde_json::to_string(&session).unwrap();
         let back: super::Session = serde_json::from_str(&out).unwrap();
-        assert_eq!(back, via_2_3_0);
+        assert_eq!(back, session);
     }
 
     #[test]
@@ -316,13 +333,14 @@ mod tests {
         let _: fn(crate::v2_2_1::Connector) -> super::Connector = |x| x; // 15118 flags land here
                                                                          // NB: `Tariff` is no longer asserted here — it is a genuine `v2_3_0`
                                                                          // fork carrying the North-American tax fields (see `mod tariffs`).
-        let _: fn(crate::v2_2_1::Cdr) -> super::Cdr = |x| x; // NA tax fields land here
-                                                             // NOTE: `Credentials` is intentionally *absent* here — #179 forked it
-                                                             // into a `v2_3_0`-local override (the `hub_party_id` field), so it is no
-                                                             // longer an alias of `v2_2_1::Credentials`. `CredentialsRole` stays
-                                                             // wire-identical and is still covered by the re-export path.
+                                                                         // NB: `Cdr` and `Session` are also no longer asserted — #188 forked
+                                                                         // them so their cost fields carry the reworked tax-itemised `Price`
+                                                                         // (see `mod cdrs` / `mod sessions`).
+                                                                         // NOTE: `Credentials` is intentionally *absent* here — #179 forked it
+                                                                         // into a `v2_3_0`-local override (the `hub_party_id` field), so it is no
+                                                                         // longer an alias of `v2_2_1::Credentials`. `CredentialsRole` stays
+                                                                         // wire-identical and is still covered by the re-export path.
         let _: fn(crate::v2_2_1::CredentialsRole) -> super::CredentialsRole = |x| x;
-        let _: fn(crate::v2_2_1::Session) -> super::Session = |x| x;
         let _: fn(crate::v2_2_1::Token) -> super::Token = |x| x;
         let _: fn(crate::v2_2_1::StartSession) -> super::StartSession = |x| x;
         let _: fn(crate::v2_2_1::ChargingProfile) -> super::ChargingProfile = |x| x;
