@@ -46,15 +46,27 @@
 //!
 //! ## Status of the deltas
 //!
+//! - **Payments** — implemented (#176): the new-module delta lands as the
+//!   `v2_3_0`-local [`payments`] submodule (`Terminal`,
+//!   `FinancialAdviceConfirmation`, `InvoiceCreator`, `CaptureStatusCode`).
 //! - **Credentials** — implemented (#179): [`credentials::Credentials`] adds the
 //!   optional `hub_party_id` field; [`CredentialsRole`] stays a re-export
 //!   (wire-identical — the 2.3.0 change is only *which* roles a hub lists).
-//! - Payments, the Locations Parking/`accepted_emsps`/15118 additions, and the
+//! - The Locations Parking/`accepted_emsps`/15118 additions and the
 //!   North-American tax fields are not implemented yet — each lands in its own
 //!   follow-up over this module.
 //!
-//! The README support-matrix 2.3.0 column stays ☐ (planned) until the module
-//! set is complete.
+//! Until a module's full transport (types + client + server) is in place the
+//! README support-matrix 2.3.0 column stays ☐ (planned), not ◑/☑.
+
+// ── Payments (new in 2.3.0) ───────────────────────────────────────────────────
+//
+// The Payments module has no 2.2.1 predecessor, so it is a `v2_3_0`-local
+// module rather than a re-export. Its wire identifier is the shared
+// `ModuleID::Payments` variant (`"payments"`), added to the version enum for
+// this release.
+pub mod payments;
+pub use payments::{CaptureStatusCode, FinancialAdviceConfirmation, InvoiceCreator, Terminal};
 
 // ── Version / endpoint layer ──────────────────────────────────────────────────
 //
