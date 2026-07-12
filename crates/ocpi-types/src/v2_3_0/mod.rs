@@ -49,6 +49,9 @@
 //! The **foundation** slice (#174) landed the alias-by-default re-exports. Each
 //! wire delta lands in its own follow-up over this module:
 //!
+//! - **Payments (#176, the `payments` submodule):** the new-module delta —
+//!   `Terminal`, `FinancialAdviceConfirmation`, `InvoiceCreator`,
+//!   `CaptureStatusCode`, keyed by the shared `ModuleID::Payments`.
 //! - **Locations (slice 1 of #177, implemented here in the `locations`
 //!   submodule):** the new [`Parking`] object + [`VehicleType`] /
 //!   [`ParkingDirection`] enums, and the [`Location`] fork carrying
@@ -57,9 +60,18 @@
 //!   deltas fork those composites in slice 2, so `Evse` / `Connector` stay
 //!   re-exports for now.
 //!
-//! The remaining deltas (Payments, North-American tax, the Credentials hub
-//! additions) each land as their own `v2_3_0`-local override. Until a module's
-//! deltas are fully wired its README support-matrix 2.3.0 cell stays ☐/◑.
+//! The remaining deltas (North-American tax, the Credentials hub additions)
+//! each land as their own `v2_3_0`-local override. Until a module's deltas are
+//! fully wired its README support-matrix 2.3.0 cell stays ☐/◑.
+
+// ── Payments (new in 2.3.0) ───────────────────────────────────────────────────
+//
+// The Payments module has no 2.2.1 predecessor, so it is a `v2_3_0`-local
+// module rather than a re-export. Its wire identifier is the shared
+// `ModuleID::Payments` variant (`"payments"`), added to the version enum for
+// this release.
+pub mod payments;
+pub use payments::{CaptureStatusCode, FinancialAdviceConfirmation, InvoiceCreator, Terminal};
 
 // ── Version / endpoint layer ──────────────────────────────────────────────────
 //
