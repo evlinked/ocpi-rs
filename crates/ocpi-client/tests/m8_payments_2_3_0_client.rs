@@ -15,14 +15,27 @@
 //!
 //! ## Sender endpoints exercised (§82)
 //!
+//! Read side (`..._ptp_sender_round_trip`):
 //! - list:   `GET {base}/payments/terminals?…`                        (paginated)
 //! - object: `GET {base}/payments/terminals/{terminal_id}`
 //! - list:   `GET {base}/payments/financial-advice-confirmations?…`   (paginated)
 //! - object: `GET {base}/payments/financial-advice-confirmations/{id}`
 //!
+//! Mutating side (`..._ptp_sender_terminal_mutations`, the #185 follow-up slice):
+//! - activate:   `POST {base}/payments/terminals/activate` (PTP assigns the id)
+//! - update:     `PUT {base}/payments/terminals/{terminal_id}`
+//! - assign:     `PATCH {base}/payments/terminals/{terminal_id}`
+//! - deactivate: `POST {base}/payments/terminals/{terminal_id}/deactivate`
+//!
 //! Spec: OCPI 2.3.0 — *Payments* module (`specs/ocpi/2.3.0/mod_payments.asciidoc`).
 
-use axum::{extract::Path, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    extract::Path,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 
 use ocpi_client::{ClientError, OcpiClient};
 use ocpi_types::{
@@ -129,11 +142,67 @@ async fn get_confirmation(Path(id): Path<String>) -> axum::response::Response {
     }
 }
 
+// ── PTP-Sender mutating stub handlers (§82) ─────────────────────────────────
+
+/// `POST /payments/terminals/activate` — the PTP assigns the real `terminal_id`
+/// (the request body may carry only a placeholder) and echoes back the created
+/// terminal in the envelope `data`, mirroring the spec's "PTP sets the id" note.
+async fn activate_terminal(Json(body): Json<Terminal>) -> impl IntoResponse {
+    // The PTP ignores the client-supplied placeholder id and mints its own.
+    let mut created = body;
+    created.terminal_id = "PTP-ASSIGNED-0001".try_into().unwrap();
+    Json(OcpiResponse::success(created))
+}
+
+/// `POST /payments/terminals/{terminal_id}/deactivate` — a status-only
+/// acknowledgement for a known id, or 404 for an unknown one.
+async fn deactivate_terminal(Path(terminal_id): Path<String>) -> axum::response::Response {
+    if terminal_id == "TERM0001" {
+        Json(OcpiResponse::<()>::success_empty()).into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+/// `PUT /payments/terminals/{terminal_id}` — accept a full terminal replace for
+/// a known id (status-only ack), 404 otherwise.
+async fn put_terminal(
+    Path(terminal_id): Path<String>,
+    Json(_body): Json<Terminal>,
+) -> axum::response::Response {
+    if terminal_id == "TERM0001" {
+        Json(OcpiResponse::<()>::success_empty()).into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+/// `PATCH /payments/terminals/{terminal_id}` — accept a Location/EVSE-assignment
+/// merge-patch for a known id (status-only ack), 404 otherwise.
+async fn patch_terminal(
+    Path(terminal_id): Path<String>,
+    Json(_body): Json<serde_json::Value>,
+) -> axum::response::Response {
+    if terminal_id == "TERM0001" {
+        Json(OcpiResponse::<()>::success_empty()).into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
 /// The minimal PTP Sender interface the getters call.
 fn ptp_sender_router() -> Router {
     Router::new()
         .route("/payments/terminals", get(list_terminals))
-        .route("/payments/terminals/{terminal_id}", get(get_terminal))
+        .route("/payments/terminals/activate", post(activate_terminal))
+        .route(
+            "/payments/terminals/{terminal_id}/deactivate",
+            post(deactivate_terminal),
+        )
+        .route(
+            "/payments/terminals/{terminal_id}",
+            get(get_terminal).put(put_terminal).patch(patch_terminal),
+        )
         .route(
             "/payments/financial-advice-confirmations",
             get(list_confirmations),
@@ -241,4 +310,72 @@ async fn m8_payments_2_3_0_ptp_sender_round_trip() {
         .get_financial_advice_confirmation_2_3_0(&confirmations_url, "NOPE")
         .await;
     assert!(matches!(missing_fac, Err(ClientError::NotFound)));
+}
+
+#[tokio::test]
+async fn m8_payments_2_3_0_ptp_sender_terminal_mutations() {
+    let (listener, base) = bind().await;
+    serve(listener, ptp_sender_router());
+
+    let client = OcpiClient::new(url::Url::parse(&format!("{base}/")).unwrap(), TOKEN);
+    let terminals_url = format!("{base}/payments/terminals");
+
+    // ── POST /activate → the PTP assigns the terminal_id and returns it. ───
+    // The CPO sends a Terminal carrying only mapping data; its own placeholder
+    // id is discarded and the PTP-minted id comes back in the envelope.
+    let activated = client
+        .activate_terminal_2_3_0(&terminals_url, &terminal("PLACEHOLDER"))
+        .await
+        .expect("activate should return 200");
+    let activated = activated.expect("activation echoes the created terminal");
+    assert_eq!(
+        activated.terminal_id.as_str(),
+        "PTP-ASSIGNED-0001",
+        "the PTP assigns the terminal_id, not the caller"
+    );
+    // The mapping data the CPO supplied survives the round-trip unmangled.
+    assert_eq!(
+        activated.location_ids.first().map(|s| s.as_str()),
+        Some("LOC1")
+    );
+
+    // ── PUT /{id} → full replace of a known terminal (status-only ack). ────
+    client
+        .put_terminal_2_3_0(&terminals_url, "TERM0001", &terminal("TERM0001"))
+        .await
+        .expect("PUT of a known terminal should return 200");
+
+    // ── PATCH /{id} → assign location_ids/evse_uids (merge-patch). ─────────
+    let assignment = json!({ "location_ids": ["LOC1", "LOC2"], "evse_uids": ["3256"] });
+    client
+        .patch_terminal_2_3_0(&terminals_url, "TERM0001", &assignment)
+        .await
+        .expect("PATCH of a known terminal should return 200");
+
+    // ── POST /{id}/deactivate → status-only ack for a known terminal. ─────
+    client
+        .deactivate_terminal_2_3_0(&terminals_url, "TERM0001")
+        .await
+        .expect("deactivate of a known terminal should return 200");
+
+    // ── 404 paths: an unknown terminal id maps to ClientError::NotFound on
+    //    every mutating verb that addresses a specific terminal. ───────────
+    assert!(matches!(
+        client
+            .put_terminal_2_3_0(&terminals_url, "NOPE", &terminal("NOPE"))
+            .await,
+        Err(ClientError::NotFound)
+    ));
+    assert!(matches!(
+        client
+            .patch_terminal_2_3_0(&terminals_url, "NOPE", &json!({ "location_ids": [] }))
+            .await,
+        Err(ClientError::NotFound)
+    ));
+    assert!(matches!(
+        client
+            .deactivate_terminal_2_3_0(&terminals_url, "NOPE")
+            .await,
+        Err(ClientError::NotFound)
+    ));
 }

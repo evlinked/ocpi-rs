@@ -3416,6 +3416,155 @@ impl OcpiClient {
         envelope.data.ok_or(ClientError::EmptyData)
     }
 
+    /// Activate a **OCPI 2.3.0** payment [`Terminal`] on a PTP's Sender interface
+    /// (`POST {url}/activate`).
+    ///
+    /// A CPO calls this to hand the PTP the mapping data (a serial number via
+    /// `reference`, plus `location_ids`/`evse_uids`) needed to link a
+    /// station-integrated payment terminal. Per the spec the `terminal_id` is
+    /// optional in the activation body — the **PTP** assigns it — so the
+    /// [`Terminal`] passed here may carry a placeholder id the PTP will replace.
+    ///
+    /// Activation makes the PTP create the `Terminal` asynchronously (it then
+    /// calls the CPO Receiver's `POST payments/terminals`), so the response is an
+    /// acknowledgement whose `data` may or may not carry the created terminal;
+    /// the parsed [`Terminal`] is returned when present, `None` otherwise.
+    ///
+    /// Payments is a functional module, so the OCPI routing headers are attached
+    /// when configured, the same as every other functional-module sender.
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `POST payments/terminals/activate`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn activate_terminal_2_3_0(
+        &self,
+        url: &str,
+        terminal: &Terminal,
+    ) -> Result<Option<Terminal>, ClientError> {
+        let endpoint = format!("{}/activate", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .post(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .json(terminal)
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<Terminal> = response.json().await?;
+        Ok(envelope.data)
+    }
+
+    /// Deactivate a **OCPI 2.3.0** payment [`Terminal`] on a PTP's Sender
+    /// interface (`POST {url}/{terminal_id}/deactivate`).
+    ///
+    /// Used when a terminal is broken or its address changes. The PTP
+    /// acknowledges with a status envelope carrying no object payload.
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `POST payments/terminals/{terminal_id}/deactivate`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn deactivate_terminal_2_3_0(
+        &self,
+        url: &str,
+        terminal_id: &str,
+    ) -> Result<(), ClientError> {
+        let endpoint = format!("{}/{terminal_id}/deactivate", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .post(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        response.error_for_status()?;
+        Ok(())
+    }
+
+    /// Update the location data of a **OCPI 2.3.0** payment [`Terminal`] on a
+    /// PTP's Sender interface (`PUT {url}/{terminal_id}`).
+    ///
+    /// A full replace of the terminal object (e.g. setting `customer_reference`
+    /// and `invoice_base_url`). This is an information-push message; the PTP
+    /// acknowledges with a status envelope.
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `PUT payments/terminals/{terminal_id}`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn put_terminal_2_3_0(
+        &self,
+        url: &str,
+        terminal_id: &str,
+        terminal: &Terminal,
+    ) -> Result<(), ClientError> {
+        let endpoint = format!("{}/{terminal_id}", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .put(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .json(terminal)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        response.error_for_status()?;
+        Ok(())
+    }
+
+    /// Assign `location_ids` and/or `evse_uids` to a **OCPI 2.3.0** payment
+    /// [`Terminal`] on a PTP's Sender interface (`PATCH {url}/{terminal_id}`).
+    ///
+    /// `partial` is any `Serialize` value; use a struct with
+    /// `#[serde(skip_serializing_if = "Option::is_none")]` fields, or a
+    /// `serde_json::Value` map, to send only the changed fields (per the spec
+    /// this PATCH assigns the terminal's Location/EVSE mapping). When both
+    /// `location_ids` and `evse_uids` are sent, the sum of EVSEs is enabled.
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `PATCH payments/terminals/{terminal_id}`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn patch_terminal_2_3_0<T: ocpi_types::serde::Serialize>(
+        &self,
+        url: &str,
+        terminal_id: &str,
+        partial: &T,
+    ) -> Result<(), ClientError> {
+        let endpoint = format!("{}/{terminal_id}", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .patch(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .json(partial)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        response.error_for_status()?;
+        Ok(())
+    }
+
     /// Fetch a paginated list of **OCPI 2.3.0** [`FinancialAdviceConfirmation`]s
     /// from a PTP's Sender interface
     /// (`GET {url}?date_from&date_to&offset&limit`).
