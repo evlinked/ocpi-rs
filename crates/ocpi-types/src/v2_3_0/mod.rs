@@ -52,6 +52,10 @@
 //! - **Credentials** — implemented (#179): [`credentials::Credentials`] adds the
 //!   optional `hub_party_id` field; [`CredentialsRole`] stays a re-export
 //!   (wire-identical — the 2.3.0 change is only *which* roles a hub lists).
+//! - **North-American tax value types** — implemented (slice 1 of #188): the
+//!   reworked [`Price`] (`before_taxes` + an itemised [`TaxAmount`] list), the
+//!   load-bearing value types the CDRs / Sessions cost-field forks are written
+//!   against. The Tariffs tax delta uses its own `PriceLimit`, tracked separately.
 //! - **Locations** — slice 1 of #177 (the `locations` submodule): the new
 //!   [`Parking`] object + [`VehicleType`] / [`ParkingDirection`] enums, and the
 //!   [`Location`] fork carrying `parking_places` + `help_phone`. The EVSE
@@ -63,6 +67,9 @@
 //!   [`PriceLimit`] min/max prices, and `preauthorize_amount`. The remaining tax
 //!   rework (the reworked `Price` / CDR-and-Session cost fields) lands in its own
 //!   follow-up over this module.
+//! - The CDRs/Sessions tax object forks and the EVSE/Connector Locations
+//!   deltas are not implemented yet — each lands in its own follow-up over
+//!   this module.
 //!
 //! Until a module's full transport (types + client + server) is in place the
 //! README support-matrix 2.3.0 column stays ☐ (planned), not ◑/☑.
@@ -75,6 +82,16 @@
 // this release.
 pub mod payments;
 pub use payments::{CaptureStatusCode, FinancialAdviceConfirmation, InvoiceCreator, Terminal};
+
+// ── North-American tax value types (slice 1 of #178 / #188) ────────────────────
+//
+// The 2.3.0 `Price` rework (`before_taxes` + an itemised `TaxAmount` list,
+// replacing the VAT-only `excl_vat`/`incl_vat`) is a genuine wire fork of
+// `crate::common::Price`, so it is a `v2_3_0`-local type. It is the value type
+// the CDRs / Sessions cost-field forks (#188) are written against; the Tariffs
+// tax delta uses its own `PriceLimit` (see `super::tariffs`), not this `Price`.
+mod price;
+pub use price::{Price, TaxAmount};
 
 // ── Version / endpoint layer ──────────────────────────────────────────────────
 //
