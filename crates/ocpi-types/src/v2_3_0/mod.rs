@@ -46,9 +46,20 @@
 //!
 //! ## Status of the deltas
 //!
-//! None are implemented yet — this is the **foundation** slice (#174). Each
-//! delta lands in its own follow-up over this module; until then the README
-//! support-matrix 2.3.0 column stays ☐ (planned), not ◑/☑.
+//! The **foundation** slice (#174) landed the alias-by-default re-exports. Each
+//! wire delta lands in its own follow-up over this module:
+//!
+//! - **Locations (slice 1 of #177, implemented here in the `locations`
+//!   submodule):** the new [`Parking`] object + [`VehicleType`] /
+//!   [`ParkingDirection`] enums, and the [`Location`] fork carrying
+//!   `parking_places` + `help_phone`. The EVSE (`parking` refs /
+//!   `accepted_service_providers`) and Connector (ISO 15118 `capabilities`)
+//!   deltas fork those composites in slice 2, so `Evse` / `Connector` stay
+//!   re-exports for now.
+//!
+//! The remaining deltas (Payments, North-American tax, the Credentials hub
+//! additions) each land as their own `v2_3_0`-local override. Until a module's
+//! deltas are fully wired its README support-matrix 2.3.0 cell stays ☐/◑.
 
 // ── Version / endpoint layer ──────────────────────────────────────────────────
 //
@@ -61,6 +72,16 @@
 pub use crate::version::{
     Endpoint, InterfaceRole, ModuleID, Version, VersionDetails, VersionNumber,
 };
+
+// ── Locations delta (slice 1 of #177) ─────────────────────────────────────────
+//
+// The 2.3.0 Locations additions land as a `v2_3_0`-local override. This slice
+// carries the new `Parking` object + `VehicleType`/`ParkingDirection` enums and
+// the `Location` fork (adding `parking_places` + `help_phone`); the EVSE- and
+// Connector-level deltas (`parking` refs, `accepted_service_providers`, ISO
+// 15118 connector `capabilities`) fork those composites in the follow-up.
+mod locations;
+pub use locations::{Location, Parking, ParkingDirection, VehicleType};
 
 // ── Functional + configuration module types ───────────────────────────────────
 //
@@ -78,12 +99,12 @@ pub use crate::v2_2_1::{
     ChargingRateUnit, ClearProfileResult, ClientInfo, CommandResponse, CommandResponseType,
     CommandResult, CommandResultType, CommandType, ConnectionStatus, Connector, ConnectorFormat,
     ConnectorType, Credentials, CredentialsRole, DayOfWeek, EnergyContract, Evse,
-    ExceptionalPeriod, Facility, Hours, ImageCategory, Location, LocationReferences,
-    ParkingRestriction, ParkingType, PowerType, PriceComponent, ProfileType, PublishTokenType,
-    RegularHours, ReservationRestrictionType, ReserveNow, Session, SessionStatus,
-    SetChargingProfile, SignedData, SignedValue, StartSession, Status, StatusSchedule, StopSession,
-    Tariff, TariffDimensionType, TariffElement, TariffRestrictions, TariffType, Token, TokenType,
-    UnlockConnector, WhitelistType,
+    ExceptionalPeriod, Facility, Hours, ImageCategory, LocationReferences, ParkingRestriction,
+    ParkingType, PowerType, PriceComponent, ProfileType, PublishTokenType, RegularHours,
+    ReservationRestrictionType, ReserveNow, Session, SessionStatus, SetChargingProfile, SignedData,
+    SignedValue, StartSession, Status, StatusSchedule, StopSession, Tariff, TariffDimensionType,
+    TariffElement, TariffRestrictions, TariffType, Token, TokenType, UnlockConnector,
+    WhitelistType,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -218,7 +239,9 @@ mod tests {
         // A representative type from each module the 2.3.0 changelog touches (so
         // the guard fires exactly where a future override would): Payments has
         // no re-export yet; the rest are covered below.
-        let _: fn(crate::v2_2_1::Location) -> super::Location = |x| x; // Locations composite
+        // `Location` now forks (parking_places + help_phone, slice 1 of #177),
+        // so its identity assertion is dropped; `Evse`/`Connector` stay
+        // re-exports until slice 2 forks them for the EVSE/Connector deltas.
         let _: fn(crate::v2_2_1::Evse) -> super::Evse = |x| x;
         let _: fn(crate::v2_2_1::Connector) -> super::Connector = |x| x; // 15118 flags land here
         let _: fn(crate::v2_2_1::Tariff) -> super::Tariff = |x| x; // NA tax fields land here

@@ -132,6 +132,8 @@ impl<'de, const MAX: usize> Deserialize<'de> for CiString<MAX> {
 pub type CiString2 = CiString<2>;
 /// `CiString(3)` — eMI3 party identifier and similar 3-char fields.
 pub type CiString3 = CiString<3>;
+/// `CiString(25)` — telephone numbers (e.g. the 2.3.0 `Location.help_phone`).
+pub type CiString25 = CiString<25>;
 /// `CiString(36)` — UUIDs and similar medium-length identifiers.
 pub type CiString36 = CiString<36>;
 /// `CiString(39)` — CDR IDs (allows a credit-CDR suffix beyond the usual 36).
