@@ -95,6 +95,13 @@ use ocpi_types::v2_2::StartSession as StartSession22;
 // 2.2.1 predecessor, so these are `v2_3_0`-local types (no alias needed — the
 // names do not clash with any earlier-version import). See [`Payments230Config`].
 use ocpi_types::v2_3_0::payments::{FinancialAdviceConfirmation, Terminal};
+// The OCPI 2.3.0 Locations composites served by the CPO Sender
+// [`http::locations_2_3_0_sender_router`] via [`Locations230Config`]. These are
+// the `v2_3_0` forks (aliased to avoid clashing with the 2.2.1 `Connector`/
+// `Evse`/`Location` imports above): they carry the additive 2.3.0 fields
+// (`Location.parking_places`/`help_phone`, `Evse.parking`/
+// `accepted_service_providers`, and the ISO 15118 `Connector.capabilities`).
+use ocpi_types::v2_3_0::{Connector as Connector230, Evse as Evse230, Location as Location230};
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -5754,6 +5761,158 @@ impl Payments230Handler for Payments230Config {
     }
 }
 
+// ── Locations230Config (OCPI 2.3.0) ──────────────────────────────────────────────
+
+/// Thread-safe in-memory **OCPI 2.3.0** Locations store for use with
+/// [`http::locations_2_3_0_sender_router`] (the CPO **Sender** interface).
+///
+/// Mirrors [`Locations22Config`] but stores the `v2_3_0` [`Location230`]
+/// composite, whose nested `Evse.parking` / `accepted_service_providers` and
+/// `Connector.capabilities` (the ISO 15118 Plug-and-Charge flags) are the 2.3.0
+/// additions. The transport paths are byte-for-byte the 2.2/2.2.1 sender paths —
+/// the only difference is that the served objects carry the additive 2.3.0
+/// fields through to the wire instead of dropping them through the 2.2.1 struct.
+/// Locations are keyed by `"{country_code}/{party_id}/{location_id}"` — the
+/// owner identity comes from the seeding call, as in 2.1.1/2.2/2.2.1. Wrap in
+/// `Arc` to share across axum handlers.
+///
+/// This is the **sender** slice of #177: it pairs with the client
+/// `OcpiClient::{get_locations, get_location, get_evse, get_connector}_2_3_0`
+/// getters (#199), closing the 2.3.0 Locations sender loop end to end. The CPO
+/// **receiver** router — with the PUT/PATCH object + partial-update surface —
+/// remains the follow-up, so the `2.3.0 / Locations` support-matrix cell stays ◑.
+pub struct Locations230Config {
+    locations: std::sync::RwLock<std::collections::HashMap<String, Location230>>,
+}
+
+impl std::fmt::Debug for Locations230Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Locations230Config")
+            .field(
+                "location_count",
+                &self.locations.read().map(|m| m.len()).unwrap_or(0),
+            )
+            .finish()
+    }
+}
+
+impl Locations230Config {
+    /// Create an empty 2.3.0 Locations store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            locations: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn composite_key(country_code: &str, party_id: &str, location_id: &str) -> String {
+        format!("{country_code}/{party_id}/{location_id}")
+    }
+
+    /// Insert or replace a Location, keyed by the owner URL segments.
+    pub fn put(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        location: Location230,
+    ) {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        self.locations
+            .write()
+            .expect("lock not poisoned")
+            .insert(key, location);
+    }
+
+    /// Retrieve a Location by its composite key.
+    #[must_use]
+    pub fn get(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+    ) -> Option<Location230> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        self.locations
+            .read()
+            .expect("lock not poisoned")
+            .get(&key)
+            .cloned()
+    }
+
+    /// Return a filtered, paginated slice of the stored 2.3.0 Locations — the CPO
+    /// **sender** list (`GET /locations`). Filters by
+    /// `last_updated >= date_from` and (if provided) `last_updated < date_to`,
+    /// sorted by `last_updated`. Mirrors [`Locations22Config::list`]; the flat
+    /// sender list ignores the owner-segment key. Returns
+    /// `(page_items, total_matching_count)`.
+    #[must_use]
+    pub fn list(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Location230>, u32) {
+        let map = self.locations.read().expect("lock not poisoned");
+        let mut filtered: Vec<&Location230> = map
+            .values()
+            .filter(|l| l.last_updated >= date_from && date_to.is_none_or(|dt| l.last_updated < dt))
+            .collect();
+        filtered.sort_by_key(|l| l.last_updated);
+        let total = filtered.len() as u32;
+        let page: Vec<Location230> = filtered
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        (page, total)
+    }
+
+    /// Look up a Location by its `id` alone — the 2.3.0 **sender** flat path
+    /// (`GET /locations/{location_id}`) carries no owner segments.
+    #[must_use]
+    pub fn get_by_id(&self, location_id: &str) -> Option<Location230> {
+        self.locations
+            .read()
+            .expect("lock not poisoned")
+            .values()
+            .find(|l| l.id.as_str() == location_id)
+            .cloned()
+    }
+
+    /// Flat-path (`GET /locations/{location_id}/{evse_uid}`) EVSE getter.
+    #[must_use]
+    pub fn get_evse_by_id(&self, location_id: &str, evse_uid: &str) -> Option<Evse230> {
+        self.get_by_id(location_id)?
+            .evses
+            .into_iter()
+            .find(|e| e.uid.as_str() == evse_uid)
+    }
+
+    /// Flat-path (`GET /locations/{location_id}/{evse_uid}/{connector_id}`)
+    /// Connector getter.
+    #[must_use]
+    pub fn get_connector_by_id(
+        &self,
+        location_id: &str,
+        evse_uid: &str,
+        connector_id: &str,
+    ) -> Option<Connector230> {
+        self.get_evse_by_id(location_id, evse_uid)?
+            .connectors
+            .into_iter()
+            .find(|c| c.id.as_str() == connector_id)
+    }
+}
+
+impl Default for Locations230Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── axum integration ──────────────────────────────────────────────────────────
 
 #[cfg(feature = "axum")]
@@ -5789,9 +5948,9 @@ pub mod http {
         ChargingProfilesConfig, ChargingProfilesHandler, Commands2111Config, Commands2111Handler,
         Commands22Config, Commands22Handler, CommandsConfig, CommandsHandler,
         Credentials2111Config, CredentialsConfig, HubClientInfoConfig, Locations2111Config,
-        Locations22Config, LocationsConfig, Payments230Config, ServerError, Sessions2111Config,
-        SessionsConfig, Tariffs2111Config, Tariffs230Config, TariffsConfig, Tokens2111Config,
-        TokensConfig, VersionsConfig,
+        Locations22Config, Locations230Config, LocationsConfig, Payments230Config, ServerError,
+        Sessions2111Config, SessionsConfig, Tariffs2111Config, Tariffs230Config, TariffsConfig,
+        Tokens2111Config, TokensConfig, VersionsConfig,
     };
     // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
     use ocpi_types::v2_1_1::Credentials as Credentials2111;
@@ -5832,6 +5991,10 @@ pub mod http {
     // The OCPI 2.3.0 Payments objects served by the CPO Receiver
     // `payments_2_3_0_router` — a new-in-2.3.0 module with no 2.2.1 predecessor.
     use ocpi_types::v2_3_0::payments::{FinancialAdviceConfirmation, Terminal};
+    // The OCPI 2.3.0 Locations composites served by the CPO Sender
+    // `locations_2_3_0_sender_router` — the `v2_3_0` forks carrying the additive
+    // 2.3.0 fields (aliased to avoid clashing with the 2.2.1 imports above).
+    use ocpi_types::v2_3_0::{Connector as Connector230, Evse as Evse230, Location as Location230};
 
     // ── Versions ──────────────────────────────────────────────────────────────
 
@@ -9278,6 +9441,238 @@ pub mod http {
         }
     }
 
+    // ── Locations sender (OCPI 2.3.0) ──────────────────────────────────────────
+
+    /// Build an axum router for the OCPI **2.3.0** Locations module **sender**
+    /// interface (CPO side).
+    ///
+    /// Exposes the CPO's own 2.3.0 Location catalogue on the **flat** sender path
+    /// — no `{country_code}/{party_id}` owner segments:
+    /// - `GET /locations` — paginated list (`X-Total-Count`/`X-Limit`/`Link`)
+    /// - `GET /locations/{location_id}`
+    /// - `GET /locations/{location_id}/{evse_uid}`
+    /// - `GET /locations/{location_id}/{evse_uid}/{connector_id}`
+    ///
+    /// Mirrors [`locations_2_2_sender_router`] over the `v2_3_0` composites and
+    /// pairs with the client
+    /// `OcpiClient::{get_locations, get_location, get_evse, get_connector}_2_3_0`
+    /// (#199) — closing the 2.3.0 Locations **sender** loop end to end. Unlike the
+    /// 2.2 path, the served objects carry the additive 2.3.0 fields
+    /// (`Location.parking_places`/`help_phone`, `Evse.parking`/
+    /// `accepted_service_providers`, and the ISO 15118 `Connector.capabilities`)
+    /// through to the wire instead of dropping them. It is a **separate** router
+    /// from the (still-to-come) receiver — its 3-segment connector path would
+    /// otherwise collide with a receiver's 3-segment owner path.
+    ///
+    /// Spec: OCPI 2.3.0 — *Locations* module, CPO (Sender) Interface
+    /// (`specs/ocpi/2.3.0/mod_locations.asciidoc`).
+    pub fn locations_2_3_0_sender_router(config: Arc<Locations230Config>) -> Router {
+        Router::new()
+            .route("/locations", get(locations_2_3_0_list))
+            .route("/locations/{location_id}", get(location_2_3_0_sender_get))
+            .route(
+                "/locations/{location_id}/{evse_uid}",
+                get(evse_2_3_0_sender_get),
+            )
+            .route(
+                "/locations/{location_id}/{evse_uid}/{connector_id}",
+                get(connector_2_3_0_sender_get),
+            )
+            .with_state(config)
+    }
+
+    async fn locations_2_3_0_list(
+        State(cfg): State<Arc<Locations230Config>>,
+        Query(params): Query<PaginatedParams>,
+    ) -> Response {
+        use ocpi_types::chrono::TimeZone as _;
+        let date_from = params.date_from.unwrap_or_else(|| {
+            ocpi_types::Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .single()
+                .expect("epoch is valid")
+        });
+        let offset = params.offset.unwrap_or(0);
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
+
+        let (items, total) = cfg.list(date_from, params.date_to, offset, limit);
+        let page = OcpiPaged::new(items, offset, limit, total);
+        let next_offset = page.next_offset();
+        let body = page.into_response();
+
+        let mut response = Json(body).into_response();
+        let hdrs = response.headers_mut();
+        if let Ok(v) = total.to_string().parse() {
+            hdrs.insert("x-total-count", v);
+        }
+        if let Ok(v) = limit.to_string().parse() {
+            hdrs.insert("x-limit", v);
+        }
+        if let Some(next_off) = next_offset {
+            let link = format!("</locations?offset={next_off}&limit={limit}>; rel=\"next\"");
+            if let Ok(v) = link.parse() {
+                hdrs.insert("link", v);
+            }
+        }
+
+        response
+    }
+
+    async fn location_2_3_0_sender_get(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path(location_id): Path<String>,
+    ) -> Response {
+        match cfg.get_by_id(&location_id) {
+            Some(location) => Json(OcpiResponse::success(location)).into_response(),
+            None => location_not_found::<Location230>(format!("no Location {location_id}")),
+        }
+    }
+
+    async fn evse_2_3_0_sender_get(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((location_id, evse_uid)): Path<(String, String)>,
+    ) -> Response {
+        match cfg.get_evse_by_id(&location_id, &evse_uid) {
+            Some(evse) => Json(OcpiResponse::success(evse)).into_response(),
+            None => location_not_found::<Evse230>(format!("no EVSE {evse_uid} in {location_id}")),
+        }
+    }
+
+    async fn connector_2_3_0_sender_get(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((location_id, evse_uid, connector_id)): Path<(String, String, String)>,
+    ) -> Response {
+        match cfg.get_connector_by_id(&location_id, &evse_uid, &connector_id) {
+            Some(connector) => Json(OcpiResponse::success(connector)).into_response(),
+            None => location_not_found::<Connector230>(format!(
+                "no Connector {connector_id} in {evse_uid}"
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    mod locations_2_3_0_sender_tests {
+        use super::*;
+
+        /// A spec-shaped **2.3.0** Location carrying every additive 2.3.0 field:
+        /// a `parking_places` entry, a `help_phone`, an `Evse.parking` reference +
+        /// `accepted_service_providers`, and an ISO 15118 `Connector.capabilities`
+        /// flag. These are exactly the fields a 2.2.1 struct would silently drop.
+        fn sample_location_2_3_0() -> Location230 {
+            ocpi_types::serde_json::from_value(ocpi_types::serde_json::json!({
+                "country_code": "NL",
+                "party_id": "TNM",
+                "id": "LOC230",
+                "publish": true,
+                "address": "Kerkstraat 1",
+                "city": "Amsterdam",
+                "country": "NLD",
+                "coordinates": { "latitude": "52.370216", "longitude": "4.895168" },
+                "parking_places": [{
+                    "id": "P1",
+                    "vehicle_types": ["DISABLED"],
+                    "restricted_to_type": true,
+                    "reservation_required": false
+                }],
+                "help_phone": "+31201234567",
+                "evses": [{
+                    "uid": "EVSE-1",
+                    "status": "AVAILABLE",
+                    "connectors": [{
+                        "id": "1",
+                        "standard": "IEC_62196_T2",
+                        "format": "SOCKET",
+                        "power_type": "AC_3_PHASE",
+                        "max_voltage": 400,
+                        "max_amperage": 32,
+                        "capabilities": ["ISO_15118_20_PLUG_AND_CHARGE"],
+                        "last_updated": "2024-06-01T10:00:00Z"
+                    }],
+                    "parking": [{ "parking_id": "P1" }],
+                    "accepted_service_providers": ["NL-TNM"],
+                    "last_updated": "2024-06-01T10:00:00Z"
+                }],
+                "time_zone": "Europe/Amsterdam",
+                "last_updated": "2024-06-01T10:00:00Z"
+            }))
+            .unwrap()
+        }
+
+        async fn body_string(resp: Response) -> String {
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            String::from_utf8(bytes.to_vec()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn list_serves_the_2_3_0_fields_and_pagination_headers() {
+            let cfg = Arc::new(Locations230Config::new());
+            cfg.put("NL", "TNM", "LOC230", sample_location_2_3_0());
+
+            let resp = locations_2_3_0_list(State(cfg), Query(PaginatedParams::default())).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(resp.headers().get("x-total-count").unwrap(), "1");
+            let body = body_string(resp).await;
+            // The additive 2.3.0 fields reach the wire — a 2.2.1 struct would have
+            // dropped every one of these on the way out.
+            assert!(body.contains("parking_places"), "missing parking: {body}");
+            assert!(body.contains("help_phone"), "missing help_phone: {body}");
+            assert!(
+                body.contains("accepted_service_providers"),
+                "missing accepted_service_providers: {body}"
+            );
+            assert!(
+                body.contains("ISO_15118_20_PLUG_AND_CHARGE"),
+                "missing 15118 capability: {body}"
+            );
+        }
+
+        #[tokio::test]
+        async fn object_getters_round_trip_and_missing_is_a_2003() {
+            let cfg = Arc::new(Locations230Config::new());
+            cfg.put("NL", "TNM", "LOC230", sample_location_2_3_0());
+
+            let resp =
+                location_2_3_0_sender_get(State(Arc::clone(&cfg)), Path("LOC230".to_owned())).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(body_string(resp).await.contains("help_phone"));
+
+            let resp = evse_2_3_0_sender_get(
+                State(Arc::clone(&cfg)),
+                Path(("LOC230".to_owned(), "EVSE-1".to_owned())),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(body_string(resp)
+                .await
+                .contains("accepted_service_providers"));
+
+            let resp = connector_2_3_0_sender_get(
+                State(Arc::clone(&cfg)),
+                Path(("LOC230".to_owned(), "EVSE-1".to_owned(), "1".to_owned())),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(body_string(resp)
+                .await
+                .contains("ISO_15118_20_PLUG_AND_CHARGE"));
+
+            // An unknown Connector is an explicit OCPI 2003 (unknown location),
+            // never a silent 200 with an empty body.
+            let resp = connector_2_3_0_sender_get(
+                State(cfg),
+                Path(("LOC230".to_owned(), "EVSE-1".to_owned(), "9".to_owned())),
+            )
+            .await;
+            let body = body_string(resp).await;
+            assert!(
+                body.contains("2003"),
+                "expected UnknownLocation 2003: {body}"
+            );
+        }
+    }
+
     // ── Versions handler tests (#99) ───────────────────────────────────────────
     //
     // Drive the `version_details` axum handler directly (no live socket) to
@@ -12130,5 +12525,93 @@ mod tests {
             parsed.is_err(),
             "an over-length terminal_id must be rejected on deserialize"
         );
+    }
+
+    // ── Locations230Config tests (OCPI 2.3.0 sender store, slice of #177) ──────
+
+    /// A minimal 2.3.0 Location with the given `id` / `last_updated` for the
+    /// sender-store filter/pagination tests.
+    fn location_2_3_0_at(id: &str, last_updated: &str) -> Location230 {
+        ocpi_types::serde_json::from_value(ocpi_types::serde_json::json!({
+            "country_code": "NL",
+            "party_id": "TNM",
+            "id": id,
+            "publish": true,
+            "address": "Kerkstraat 1",
+            "city": "Amsterdam",
+            "country": "NLD",
+            "coordinates": { "latitude": "52.370216", "longitude": "4.895168" },
+            "evses": [],
+            "time_zone": "Europe/Amsterdam",
+            "last_updated": last_updated,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn locations_230_config_composite_get_and_flat_lookup() {
+        let cfg = Locations230Config::new();
+        cfg.put(
+            "NL",
+            "TNM",
+            "LOC230",
+            location_2_3_0_at("LOC230", "2024-01-01T00:00:00Z"),
+        );
+
+        // Composite-key get honours the owner segments; the flat sender getter
+        // finds the same Location by id alone.
+        assert_eq!(
+            cfg.get("NL", "TNM", "LOC230").unwrap().id.as_str(),
+            "LOC230"
+        );
+        assert_eq!(cfg.get_by_id("LOC230").unwrap().id.as_str(), "LOC230");
+
+        // Wrong owner segments or an unknown id miss.
+        assert!(cfg.get("BE", "BEC", "LOC230").is_none());
+        assert!(cfg.get_by_id("NOPE").is_none());
+    }
+
+    #[test]
+    fn locations_230_config_list_filters_and_paginates() {
+        let cfg = Locations230Config::new();
+        cfg.put(
+            "NL",
+            "TNM",
+            "L1",
+            location_2_3_0_at("L1", "2020-01-01T00:00:00Z"),
+        );
+        cfg.put(
+            "NL",
+            "TNM",
+            "L2",
+            location_2_3_0_at("L2", "2021-01-01T00:00:00Z"),
+        );
+        cfg.put(
+            "NL",
+            "TNM",
+            "L3",
+            location_2_3_0_at("L3", "2022-01-01T00:00:00Z"),
+        );
+
+        // No filter: all three, sorted by last_updated.
+        let epoch = "1970-01-01T00:00:00Z".parse().unwrap();
+        let (all, total) = cfg.list(epoch, None, 0, 50);
+        assert_eq!(total, 3);
+        assert_eq!(
+            all.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["L1", "L2", "L3"]
+        );
+
+        // date_from excludes the oldest; the page caps the slice but total stays
+        // the full filtered count.
+        let from = "2021-01-01T00:00:00Z".parse().unwrap();
+        let (page, total) = cfg.list(from, None, 0, 1);
+        assert_eq!(total, 2);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].id.as_str(), "L2");
+
+        // offset walks to the next page.
+        let (page, _) = cfg.list(from, None, 1, 1);
+        assert_eq!(page[0].id.as_str(), "L3");
     }
 }
