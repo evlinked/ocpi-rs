@@ -53,6 +53,11 @@ use ocpi_types::v2_3_0::Session as Session230;
 // keep it distinct from the role-bearing 2.2.1 `Cdr` imported above. See
 // [`Cdrs2111Config`].
 use ocpi_types::v2_1_1::Cdr as Cdr2111;
+// The OCPI 2.3.0 CDR object — the 2.2.1 shape with all six cost fields reworked
+// onto the tax-itemised 2.3.0 `Price` (an itemised `TaxAmount` list) and its
+// `tariffs` list embedding the 2.3.0 `Tariff` — aliased to keep it distinct
+// from the role-bearing 2.2.1 `Cdr` imported above. See [`Cdrs230Config`].
+use ocpi_types::v2_3_0::Cdr as Cdr230;
 // The OCPI 2.2 CDR object — a `CdrToken` with no `country_code`/`party_id`, a
 // `Cdr` with no `home_charging_compensation`, a `CdrLocation` with a required
 // `postal_code` and no `state` — aliased to keep it distinct from the
@@ -106,6 +111,12 @@ use ocpi_types::v2_3_0::payments::{FinancialAdviceConfirmation, Terminal};
 // (`Location.parking_places`/`help_phone`, `Evse.parking`/
 // `accepted_service_providers`, and the ISO 15118 `Connector.capabilities`).
 use ocpi_types::v2_3_0::{Connector as Connector230, Evse as Evse230, Location as Location230};
+// The OCPI 2.3.0 Credentials object (the `hub_party_id` fork of the 2.2.1
+// shape, #179), aliased to keep it distinct from the 2.2.1 `Credentials`
+// imported above. Served by [`http::credentials_2_3_0_router`] via
+// [`Credentials230Config`]; 2.3.0 reuses the 2.2.1 role-bearing Versions layer,
+// so the registration fetch-back runs over the same [`VersionFetcher`].
+use ocpi_types::v2_3_0::Credentials as Credentials230;
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -919,6 +930,227 @@ impl Credentials2111Config {
     /// Unlike [`delete`](Self::delete) this never errors on an unknown token —
     /// it is used to burn the single-use bootstrap *Token A* once registration
     /// completes. Returns `true` if the token was present.
+    pub fn invalidate(&self, token: &str) -> bool {
+        self.registered
+            .write()
+            .expect("lock not poisoned")
+            .remove(token)
+            .is_some()
+    }
+
+    /// Remove the registration for `token`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotRegistered`] if `token` is not in the registry.
+    pub fn delete(&self, token: &str) -> Result<(), ServerError> {
+        let mut map = self.registered.write().expect("lock not poisoned");
+        if !map.contains_key(token) {
+            return Err(ServerError::NotRegistered);
+        }
+        map.remove(token);
+        Ok(())
+    }
+}
+
+// ── Credentials230Config (OCPI 2.3.0) ───────────────────────────────────────
+
+/// A registered remote party on the **OCPI 2.3.0** handshake: their
+/// [`Credentials230`] plus, when the registration fetch-back ran, the endpoint
+/// catalogue fetched from their `/versions` details.
+#[derive(Debug, Clone)]
+pub struct Registered230Party {
+    /// The 2.3.0 credentials object the party presented at registration.
+    pub credentials: Credentials230,
+    /// Endpoints fetched from the party's selected version details, or `None`
+    /// when no [`VersionFetcher`] was configured (fetch-back skipped).
+    pub endpoints: Option<Vec<Endpoint>>,
+}
+
+/// An in-memory credentials store for the **OCPI 2.3.0** registration handshake
+/// — the 2.3.0 counterpart to [`CredentialsConfig`], serving/storing the
+/// [`Credentials230`] fork so a Hub partner's `hub_party_id` survives a real
+/// Token A→B→C exchange (#206).
+///
+/// 2.3.0 reuses the 2.2.1 role-bearing Versions layer verbatim, so — unlike the
+/// role-less 2.1.1 path ([`Credentials2111Config`]) — this shares the same
+/// [`VersionFetcher`] transport as [`CredentialsConfig`]; only the (de)serialize
+/// target forks. Thread-safe via interior mutability (`RwLock`); wrap in `Arc`
+/// to share across the handlers of [`http::credentials_2_3_0_router`].
+pub struct Credentials230Config {
+    /// The credentials this server returns on every successful request.
+    pub own_credentials: Credentials230,
+    registered: std::sync::RwLock<std::collections::HashMap<String, Registered230Party>>,
+    supported_versions: Vec<VersionNumber>,
+    fetcher: Option<std::sync::Arc<dyn VersionFetcher>>,
+}
+
+impl std::fmt::Debug for Credentials230Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials230Config")
+            .field("own_credentials", &self.own_credentials)
+            .field(
+                "registered_count",
+                &self.registered.read().map(|m| m.len()).unwrap_or(0),
+            )
+            .field("supported_versions", &self.supported_versions)
+            .field("fetch_back", &self.fetcher.is_some())
+            .finish()
+    }
+}
+
+impl Credentials230Config {
+    /// Create a new 2.3.0 registry with the given server credentials and no
+    /// registration fetch-back (parties register without an endpoint catalogue).
+    #[must_use]
+    pub fn new(own_credentials: Credentials230) -> Self {
+        Self {
+            own_credentials,
+            registered: std::sync::RwLock::new(std::collections::HashMap::new()),
+            supported_versions: vec![VersionNumber::V2_3_0],
+            fetcher: None,
+        }
+    }
+
+    /// Create a 2.3.0 registry that performs the OCPI registration fetch-back
+    /// (mirrors [`CredentialsConfig::new_with_fetcher`]; any failure surfaces as
+    /// OCPI status code `3001`).
+    #[must_use]
+    pub fn new_with_fetcher(
+        own_credentials: Credentials230,
+        supported_versions: Vec<VersionNumber>,
+        fetcher: std::sync::Arc<dyn VersionFetcher>,
+    ) -> Self {
+        Self {
+            own_credentials,
+            registered: std::sync::RwLock::new(std::collections::HashMap::new()),
+            supported_versions,
+            fetcher: Some(fetcher),
+        }
+    }
+
+    /// Returns `true` if `token` belongs to a registered party.
+    #[must_use]
+    pub fn is_registered(&self, token: &str) -> bool {
+        self.registered
+            .read()
+            .expect("lock not poisoned")
+            .contains_key(token)
+    }
+
+    /// Register a new party under `token`, without an endpoint catalogue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::AlreadyRegistered`] if `token` is already known.
+    pub fn register(&self, token: &str, credentials: Credentials230) -> Result<(), ServerError> {
+        self.register_with_endpoints(token, credentials, None)
+    }
+
+    /// Register a new party under `token`, storing their [`Credentials230`] and
+    /// the endpoint catalogue fetched during the handshake.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::AlreadyRegistered`] if `token` is already known.
+    pub fn register_with_endpoints(
+        &self,
+        token: &str,
+        credentials: Credentials230,
+        endpoints: Option<Vec<Endpoint>>,
+    ) -> Result<(), ServerError> {
+        let mut map = self.registered.write().expect("lock not poisoned");
+        if map.contains_key(token) {
+            return Err(ServerError::AlreadyRegistered);
+        }
+        map.insert(
+            token.to_owned(),
+            Registered230Party {
+                credentials,
+                endpoints,
+            },
+        );
+        Ok(())
+    }
+
+    /// Update the stored credentials for an already-registered party, clearing
+    /// any stored endpoint catalogue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotRegistered`] if `token` is not in the registry.
+    pub fn update(&self, token: &str, credentials: Credentials230) -> Result<(), ServerError> {
+        self.update_with_endpoints(token, credentials, None)
+    }
+
+    /// Update the stored credentials and endpoint catalogue for an
+    /// already-registered party.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotRegistered`] if `token` is not in the registry.
+    pub fn update_with_endpoints(
+        &self,
+        token: &str,
+        credentials: Credentials230,
+        endpoints: Option<Vec<Endpoint>>,
+    ) -> Result<(), ServerError> {
+        let mut map = self.registered.write().expect("lock not poisoned");
+        if !map.contains_key(token) {
+            return Err(ServerError::NotRegistered);
+        }
+        map.insert(
+            token.to_owned(),
+            Registered230Party {
+                credentials,
+                endpoints,
+            },
+        );
+        Ok(())
+    }
+
+    /// Return the endpoint catalogue stored for a registered party, if any.
+    #[must_use]
+    pub fn get_endpoints(&self, token: &str) -> Option<Vec<Endpoint>> {
+        self.registered
+            .read()
+            .expect("lock not poisoned")
+            .get(token)
+            .and_then(|party| party.endpoints.clone())
+    }
+
+    /// Run the registration fetch-back for a registering 2.3.0 party.
+    ///
+    /// Returns `Ok(None)` when no [`VersionFetcher`] is configured. Otherwise it
+    /// `GET`s the party's `/versions`, selects the highest mutually-supported
+    /// version, fetches that version's endpoint catalogue, and returns it. The
+    /// presented [`Credentials230::token`] authenticates the outbound calls;
+    /// [`Credentials230::url`] is the party's `/versions` URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FetchError`] on any transport, negotiation, or parse failure;
+    /// callers map this to OCPI status code `3001`.
+    pub async fn fetch_back(
+        &self,
+        credentials: &Credentials230,
+    ) -> Result<Option<Vec<Endpoint>>, FetchError> {
+        let Some(fetcher) = self.fetcher.as_ref() else {
+            return Ok(None);
+        };
+        let url = credentials.url.as_str();
+        let token = credentials.token.as_str();
+        let remote = fetcher.fetch_versions(url, token).await?;
+        let chosen = select_best_version(&remote, &self.supported_versions)
+            .ok_or(FetchError::NoMutualVersion)?;
+        let details = fetcher
+            .fetch_version_details(chosen.url.as_str(), token)
+            .await?;
+        Ok(Some(details.endpoints))
+    }
+
+    /// Invalidate `token`, removing it from the registry if present (used to
+    /// burn the single-use bootstrap *Token A*). Returns `true` if present.
     pub fn invalidate(&self, token: &str) -> bool {
         self.registered
             .write()
@@ -2251,6 +2483,183 @@ impl Cdrs22Handler for Cdrs22Config {
     }
 }
 
+// ── Cdrs230Handler (OCPI 2.3.0) ─────────────────────────────────────────────────
+
+/// Handles the OCPI **2.3.0** CDRs module endpoints.
+///
+/// Implements both the **sender** interface (CPO exposes `GET /cdrs`) and the
+/// **receiver** interface (eMSP exposes `POST /cdrs` + `GET /cdrs/{cdr_id}`).
+///
+/// ## Delta from the 2.2.1 [`CdrsHandler`]
+///
+/// The transport is identical — a CDR is a **server-owned** object (the
+/// receiver names it via the `Location` header on `POST /cdrs`), so the 2.3.0
+/// paths are **flat** (`/cdrs`, `/cdrs/{cdr_id}`) with no
+/// `{country_code}/{party_id}` segments, exactly as in 2.2.1. Only the payload
+/// differs: the 2.3.0 [`Cdr230`] object, whose six cost fields carry the
+/// tax-itemised 2.3.0 `Price`, so a North-American CDR's GST+QST breakdown is
+/// held faithfully. A `POST` body omitting the required `total_cost` (or a
+/// `total_cost` omitting `before_taxes`) is rejected on deserialize before it
+/// can reach the store.
+///
+/// Spec: OCPI 2.3.0 — *CDRs* module, `specs/ocpi/2.3.0/mod_cdrs.asciidoc`.
+#[allow(async_fn_in_trait)]
+pub trait Cdrs230Handler {
+    /// Paginated list of 2.3.0 CDRs whose `last_updated` is in
+    /// `[date_from, date_to)` — sender interface (`GET /cdrs`).
+    ///
+    /// Returns `(page_items, total_count)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] if the query cannot be executed.
+    async fn get_cdrs(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<Cdr230>, u32), ServerError>;
+
+    /// Fetch a single 2.3.0 CDR by its ID — receiver interface
+    /// (`GET /cdrs/{cdr_id}`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotFound`] when the CDR does not exist.
+    async fn get_cdr(&self, cdr_id: &str) -> Result<Cdr230, ServerError>;
+
+    /// Store a new 2.3.0 CDR and return its URL — receiver interface
+    /// (`POST /cdrs`).
+    ///
+    /// The returned `String` is the absolute URL at which the stored CDR can be
+    /// retrieved (used for the HTTP `Location` response header).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] on storage failure.
+    async fn post_cdr(&self, cdr: Cdr230) -> Result<String, ServerError>;
+}
+
+// ── Cdrs230Config (OCPI 2.3.0) ──────────────────────────────────────────────────
+
+/// Thread-safe in-memory **OCPI 2.3.0** CDR store for use with
+/// [`http::cdrs_2_3_0_router`].
+///
+/// Mirrors [`Cdrs2111Config`] but stores the 2.3.0 [`Cdr230`] shape. CDRs are
+/// keyed by their `id`. The `base_url` (e.g.
+/// `"https://example.com/ocpi/2.3.0"`) is prepended to construct the
+/// `Location` header returned by `POST /cdrs`.
+pub struct Cdrs230Config {
+    base_url: String,
+    cdrs: std::sync::RwLock<std::collections::HashMap<String, Cdr230>>,
+}
+
+impl std::fmt::Debug for Cdrs230Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cdrs230Config")
+            .field("cdr_count", &self.cdrs.read().map(|m| m.len()).unwrap_or(0))
+            .field("base_url", &self.base_url)
+            .finish()
+    }
+}
+
+impl Cdrs230Config {
+    /// Create an empty 2.3.0 CDR store.
+    ///
+    /// `base_url` is used to build the `Location` header on `POST /cdrs`
+    /// (e.g. `"https://example.com/ocpi/2.3.0"`).
+    #[must_use]
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            cdrs: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Construct the URL for a CDR by its ID.
+    fn cdr_url(&self, cdr_id: &str) -> String {
+        format!("{}/cdrs/{cdr_id}", self.base_url.trim_end_matches('/'))
+    }
+
+    /// Store a CDR and return its URL.
+    pub fn store(&self, cdr: Cdr230) -> String {
+        let id = cdr.id.as_str().to_string();
+        let url = self.cdr_url(&id);
+        self.cdrs
+            .write()
+            .expect("lock not poisoned")
+            .insert(id, cdr);
+        url
+    }
+
+    /// Retrieve a CDR by its ID.
+    #[must_use]
+    pub fn get(&self, cdr_id: &str) -> Option<Cdr230> {
+        self.cdrs
+            .read()
+            .expect("lock not poisoned")
+            .get(cdr_id)
+            .cloned()
+    }
+
+    /// Return a filtered and paginated slice of CDRs.
+    ///
+    /// Filters by `last_updated >= date_from` and (if provided)
+    /// `last_updated < date_to`. Results are sorted by `last_updated`.
+    ///
+    /// Returns `(page_items, total_matching_count)`.
+    #[must_use]
+    pub fn list(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Cdr230>, u32) {
+        let map = self.cdrs.read().expect("lock not poisoned");
+        let mut filtered: Vec<&Cdr230> = map
+            .values()
+            .filter(|c| c.last_updated >= date_from && date_to.is_none_or(|dt| c.last_updated < dt))
+            .collect();
+        filtered.sort_by_key(|c| c.last_updated);
+        let total = filtered.len() as u32;
+        let page: Vec<Cdr230> = filtered
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        (page, total)
+    }
+}
+
+impl Default for Cdrs230Config {
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
+#[allow(async_fn_in_trait)]
+impl Cdrs230Handler for Cdrs230Config {
+    async fn get_cdrs(
+        &self,
+        date_from: DateTime<Utc>,
+        date_to: Option<DateTime<Utc>>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<Cdr230>, u32), ServerError> {
+        Ok(self.list(date_from, date_to, offset, limit))
+    }
+
+    async fn get_cdr(&self, cdr_id: &str) -> Result<Cdr230, ServerError> {
+        self.get(cdr_id).ok_or(ServerError::NotFound)
+    }
+
+    async fn post_cdr(&self, cdr: Cdr230) -> Result<String, ServerError> {
+        Ok(self.store(cdr))
+    }
+}
 // ── TariffsHandler ────────────────────────────────────────────────────────────
 
 /// Handles the OCPI Tariffs module endpoints.
@@ -6149,6 +6558,144 @@ impl Locations230Config {
             .into_iter()
             .find(|c| c.id.as_str() == connector_id)
     }
+
+    // ── Receiver surface (eMSP side, owner-qualified) — used by
+    // `http::locations_2_3_0_router`. Mirrors [`Locations22Config`] exactly,
+    // retargeted to the `v2_3_0` composites so the additive 2.3.0 fields are
+    // preserved through a client-owned Location *push*. ─────────────────────
+
+    /// Retrieve a nested EVSE by its `uid`, owner-qualified (receiver path).
+    #[must_use]
+    pub fn get_evse(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse_uid: &str,
+    ) -> Option<Evse230> {
+        self.get(country_code, party_id, location_id)?
+            .evses
+            .into_iter()
+            .find(|e| e.uid.as_str() == evse_uid)
+    }
+
+    /// Retrieve a nested Connector by its `id`, owner-qualified (receiver path).
+    #[must_use]
+    pub fn get_connector(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse_uid: &str,
+        connector_id: &str,
+    ) -> Option<Connector230> {
+        self.get_evse(country_code, party_id, location_id, evse_uid)?
+            .connectors
+            .into_iter()
+            .find(|c| c.id.as_str() == connector_id)
+    }
+
+    /// Apply a JSON merge-patch to an existing Location (`NotFound` if absent).
+    pub fn patch_location(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        let mut map = self.locations.write().expect("lock not poisoned");
+        let current = map.get(&key).ok_or(ServerError::NotFound)?;
+        let updated = apply_merge_patch(current, partial)?;
+        map.insert(key, updated);
+        Ok(())
+    }
+
+    /// Upsert a nested EVSE (`NotFound` if the parent Location is unknown).
+    pub fn put_evse(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse: Evse230,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        let mut map = self.locations.write().expect("lock not poisoned");
+        let location = map.get_mut(&key).ok_or(ServerError::NotFound)?;
+        upsert_by(&mut location.evses, evse, |e| e.uid.as_str().to_owned());
+        Ok(())
+    }
+
+    /// Merge-patch a nested EVSE (`NotFound` if Location or EVSE is unknown).
+    pub fn patch_evse(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse_uid: &str,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        let mut map = self.locations.write().expect("lock not poisoned");
+        let location = map.get_mut(&key).ok_or(ServerError::NotFound)?;
+        let evse = location
+            .evses
+            .iter_mut()
+            .find(|e| e.uid.as_str() == evse_uid)
+            .ok_or(ServerError::NotFound)?;
+        *evse = apply_merge_patch(evse, partial)?;
+        Ok(())
+    }
+
+    /// Upsert a nested Connector (`NotFound` if Location or EVSE is unknown).
+    pub fn put_connector(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse_uid: &str,
+        connector: Connector230,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        let mut map = self.locations.write().expect("lock not poisoned");
+        let location = map.get_mut(&key).ok_or(ServerError::NotFound)?;
+        let evse = location
+            .evses
+            .iter_mut()
+            .find(|e| e.uid.as_str() == evse_uid)
+            .ok_or(ServerError::NotFound)?;
+        upsert_by(&mut evse.connectors, connector, |c| {
+            c.id.as_str().to_owned()
+        });
+        Ok(())
+    }
+
+    /// Merge-patch a nested Connector (`NotFound` if any level is unknown).
+    pub fn patch_connector(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse_uid: &str,
+        connector_id: &str,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        let mut map = self.locations.write().expect("lock not poisoned");
+        let location = map.get_mut(&key).ok_or(ServerError::NotFound)?;
+        let evse = location
+            .evses
+            .iter_mut()
+            .find(|e| e.uid.as_str() == evse_uid)
+            .ok_or(ServerError::NotFound)?;
+        let connector = evse
+            .connectors
+            .iter_mut()
+            .find(|c| c.id.as_str() == connector_id)
+            .ok_or(ServerError::NotFound)?;
+        *connector = apply_merge_patch(connector, partial)?;
+        Ok(())
+    }
 }
 
 impl Default for Locations230Config {
@@ -6188,13 +6735,14 @@ pub mod http {
     };
 
     use crate::{
-        token_type_2_1_1_str, token_type_str, Cdrs2111Config, Cdrs22Config, CdrsConfig,
-        ChargingProfilesConfig, ChargingProfilesHandler, Commands2111Config, Commands2111Handler,
-        Commands22Config, Commands22Handler, CommandsConfig, CommandsHandler,
-        Credentials2111Config, CredentialsConfig, HubClientInfoConfig, Locations2111Config,
-        Locations22Config, Locations230Config, LocationsConfig, Payments230Config, ServerError,
-        Sessions2111Config, Sessions230Config, SessionsConfig, Tariffs2111Config, Tariffs230Config,
-        TariffsConfig, Tokens2111Config, TokensConfig, VersionsConfig,
+        token_type_2_1_1_str, token_type_str, Cdrs2111Config, Cdrs22Config, Cdrs230Config,
+        CdrsConfig, ChargingProfilesConfig, ChargingProfilesHandler, Commands2111Config,
+        Commands2111Handler, Commands22Config, Commands22Handler, CommandsConfig, CommandsHandler,
+        Credentials2111Config, Credentials230Config, CredentialsConfig, HubClientInfoConfig,
+        Locations2111Config, Locations22Config, Locations230Config, LocationsConfig,
+        Payments230Config, ServerError, Sessions2111Config, Sessions230Config, SessionsConfig,
+        Tariffs2111Config, Tariffs230Config, TariffsConfig, Tokens2111Config, TokensConfig,
+        VersionsConfig,
     };
     // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
     use ocpi_types::v2_1_1::Credentials as Credentials2111;
@@ -6210,6 +6758,8 @@ pub mod http {
     use ocpi_types::v2_3_0::Session as Session230;
     // The OCPI 2.1.1 CDR object served by `cdrs_2_1_1_router`.
     use ocpi_types::v2_1_1::Cdr as Cdr2111;
+    // The OCPI 2.3.0 CDR object served by `cdrs_2_3_0_router`.
+    use ocpi_types::v2_3_0::Cdr as Cdr230;
     // The OCPI 2.2 CDR object served by `cdrs_2_2_router`.
     use ocpi_types::v2_2::Cdr as Cdr22;
     // The OCPI 2.1.1 Tokens surface served by `tokens_2_1_1_router`.
@@ -6242,6 +6792,9 @@ pub mod http {
     // `locations_2_3_0_sender_router` — the `v2_3_0` forks carrying the additive
     // 2.3.0 fields (aliased to avoid clashing with the 2.2.1 imports above).
     use ocpi_types::v2_3_0::{Connector as Connector230, Evse as Evse230, Location as Location230};
+    // The OCPI 2.3.0 Credentials object (the `hub_party_id` fork) served by
+    // `credentials_2_3_0_router`.
+    use ocpi_types::v2_3_0::Credentials as Credentials230;
 
     // ── Versions ──────────────────────────────────────────────────────────────
 
@@ -6622,6 +7175,169 @@ pub mod http {
                 credentials_2_1_1_method_not_allowed("not registered")
             }
             Err(_) => credentials_2_1_1_server_error(),
+        }
+    }
+
+    // ── Credentials (OCPI 2.3.0, hub_party_id fork) ─────────────────────────────
+
+    /// Build an axum router for the **OCPI 2.3.0** Credentials module.
+    ///
+    /// Exposes `GET/POST/PUT/DELETE /credentials` over the [`Credentials230`]
+    /// fork (the `hub_party_id` addition, #179), running the *same* Token A→B→C
+    /// registration semantics as [`credentials_router`] — the registry is keyed
+    /// by the issued *Token C* (`own_credentials.token`), the bootstrap *Token A*
+    /// is burned on a successful `POST`, and the spec-mandated fetch-back runs
+    /// over the shared role-bearing [`VersionFetcher`](crate::VersionFetcher) (2.3.0 reuses the 2.2.1
+    /// Versions layer). Only the (de)serialize target differs, so a Hub
+    /// partner's `hub_party_id` survives the exchange instead of being dropped
+    /// through the 2.2.1 shape.
+    pub fn credentials_2_3_0_router(config: Arc<Credentials230Config>) -> Router {
+        Router::new()
+            .route(
+                "/credentials",
+                get(credentials_2_3_0_get)
+                    .post(credentials_2_3_0_post)
+                    .put(credentials_2_3_0_put)
+                    .delete(credentials_2_3_0_delete),
+            )
+            .with_state(config)
+    }
+
+    fn credentials_2_3_0_unauthorized() -> Response {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(OcpiResponse::<Credentials230>::error(
+                OcpiStatusCode::ClientError,
+                "unauthorized",
+            )),
+        )
+            .into_response()
+    }
+
+    fn credentials_2_3_0_method_not_allowed(msg: &'static str) -> Response {
+        (
+            StatusCode::METHOD_NOT_ALLOWED,
+            Json(OcpiResponse::<Credentials230>::error(
+                OcpiStatusCode::ClientError,
+                msg,
+            )),
+        )
+            .into_response()
+    }
+
+    fn credentials_2_3_0_server_error() -> Response {
+        Json(OcpiResponse::<Credentials230>::error(
+            OcpiStatusCode::ServerError,
+            "internal server error",
+        ))
+        .into_response()
+    }
+
+    /// `3001` — the server could not use the registering party's API during the
+    /// 2.3.0 fetch-back (could not retrieve its `/versions` or version details).
+    fn credentials_2_3_0_unable_to_use_client() -> Response {
+        Json(OcpiResponse::<Credentials230>::error(
+            OcpiStatusCode::UnableToUseClientApi,
+            "unable to use the client's API",
+        ))
+        .into_response()
+    }
+
+    async fn credentials_2_3_0_get(
+        State(cfg): State<Arc<Credentials230Config>>,
+        headers: HeaderMap,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_3_0_unauthorized(),
+        };
+        if !cfg.is_registered(token.as_str()) {
+            return credentials_2_3_0_unauthorized();
+        }
+        Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response()
+    }
+
+    async fn credentials_2_3_0_post(
+        State(cfg): State<Arc<Credentials230Config>>,
+        headers: HeaderMap,
+        Json(body): Json<Credentials230>,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_3_0_unauthorized(),
+        };
+        // Keyed by the issued Token C (`own_credentials.token`): the Sender
+        // switches to Token C for every subsequent request, so that — not the
+        // bootstrap Token A bearer — must authenticate afterwards. Reject
+        // re-registration (the Sender should PUT to rotate) before the fetch-back.
+        if cfg.is_registered(cfg.own_credentials.token.as_str()) {
+            return credentials_2_3_0_method_not_allowed("already registered");
+        }
+        // §POST: the receiver fetches the sender's endpoints for the registered
+        // version, authenticating with the sender's Token B (`body.token`). Any
+        // failure → status code 3001.
+        let endpoints = match cfg.fetch_back(&body).await {
+            Ok(endpoints) => endpoints,
+            Err(_) => return credentials_2_3_0_unable_to_use_client(),
+        };
+        match cfg.register_with_endpoints(cfg.own_credentials.token.as_str(), body, endpoints) {
+            Ok(()) => {
+                // Burn the single-use bootstrap Token A once the Sender holds
+                // Token C. Guard against a misconfiguration where Token C equals
+                // the bearer, which would otherwise undo the registration.
+                if token.as_str() != cfg.own_credentials.token.as_str() {
+                    cfg.invalidate(token.as_str());
+                }
+                Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response()
+            }
+            Err(ServerError::AlreadyRegistered) => {
+                credentials_2_3_0_method_not_allowed("already registered")
+            }
+            Err(_) => credentials_2_3_0_server_error(),
+        }
+    }
+
+    async fn credentials_2_3_0_put(
+        State(cfg): State<Arc<Credentials230Config>>,
+        headers: HeaderMap,
+        Json(body): Json<Credentials230>,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_3_0_unauthorized(),
+        };
+        // The caller authenticates with the registered Token C.
+        if !cfg.is_registered(token.as_str()) {
+            return credentials_2_3_0_method_not_allowed("not registered");
+        }
+        // §PUT: re-fetch the sender's endpoints on credential update.
+        let endpoints = match cfg.fetch_back(&body).await {
+            Ok(endpoints) => endpoints,
+            Err(_) => return credentials_2_3_0_unable_to_use_client(),
+        };
+        match cfg.update_with_endpoints(cfg.own_credentials.token.as_str(), body, endpoints) {
+            Ok(()) => Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response(),
+            Err(ServerError::NotRegistered) => {
+                credentials_2_3_0_method_not_allowed("not registered")
+            }
+            Err(_) => credentials_2_3_0_server_error(),
+        }
+    }
+
+    async fn credentials_2_3_0_delete(
+        State(cfg): State<Arc<Credentials230Config>>,
+        headers: HeaderMap,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_3_0_unauthorized(),
+        };
+        match cfg.delete(token.as_str()) {
+            Ok(()) => Json(OcpiResponse::<Credentials230>::success_empty()).into_response(),
+            Err(ServerError::NotRegistered) => {
+                credentials_2_3_0_method_not_allowed("not registered")
+            }
+            Err(_) => credentials_2_3_0_server_error(),
         }
     }
 
@@ -7606,6 +8322,100 @@ pub mod http {
                 .into_response(),
         }
     }
+    // ── CDRs (OCPI 2.3.0) ─────────────────────────────────────────────────────────
+
+    /// Build an axum router for the **OCPI 2.3.0** CDRs module.
+    ///
+    /// Exposes the same flat routes as the 2.2.1 [`cdrs_router`] — a CDR is a
+    /// server-owned object named via the `Location` header, so there are no
+    /// `{country_code}/{party_id}` segments:
+    /// - `GET  /cdrs` — paginated list (sender interface, CPO)
+    /// - `GET  /cdrs/{cdr_id}` — single CDR (receiver interface, eMSP)
+    /// - `POST /cdrs` — store a new CDR (receiver interface, eMSP); responds
+    ///   `201 Created` with a `Location` header pointing to the stored CDR.
+    ///
+    /// Only the payload is the 2.3.0 [`Cdr230`] shape (all six cost fields on the
+    /// tax-itemised 2.3.0 `Price`), so a North-American CDR's GST+QST breakdown
+    /// survives the hop. A `POST` body omitting the required `total_cost` (or a
+    /// `total_cost` omitting `before_taxes`) is rejected on deserialize by the
+    /// `Json` extractor before it reaches the store.
+    pub fn cdrs_2_3_0_router(config: Arc<Cdrs230Config>) -> Router {
+        Router::new()
+            .route("/cdrs", get(cdrs_2_3_0_list).post(cdrs_2_3_0_post))
+            .route("/cdrs/{cdr_id}", get(cdrs_2_3_0_get))
+            .with_state(config)
+    }
+
+    async fn cdrs_2_3_0_list(
+        State(cfg): State<Arc<Cdrs230Config>>,
+        Query(params): Query<PaginatedParams>,
+    ) -> Response {
+        use ocpi_types::chrono::TimeZone as _;
+        let date_from = params.date_from.unwrap_or_else(|| {
+            ocpi_types::Utc
+                .with_ymd_and_hms(1970, 1, 1, 0, 0, 0)
+                .single()
+                .expect("epoch is valid")
+        });
+        let offset = params.offset.unwrap_or(0);
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
+
+        let (items, total) = cfg.list(date_from, params.date_to, offset, limit);
+        let page = OcpiPaged::new(items, offset, limit, total);
+        let next_offset = page.next_offset();
+        let body = page.into_response();
+
+        let mut response = Json(body).into_response();
+        let hdrs = response.headers_mut();
+        if let Ok(v) = total.to_string().parse() {
+            hdrs.insert("x-total-count", v);
+        }
+        if let Ok(v) = limit.to_string().parse() {
+            hdrs.insert("x-limit", v);
+        }
+        if let Some(next_off) = next_offset {
+            let link = format!("</cdrs?offset={next_off}&limit={limit}>; rel=\"next\"");
+            if let Ok(v) = link.parse() {
+                hdrs.insert("link", v);
+            }
+        }
+
+        response
+    }
+
+    async fn cdrs_2_3_0_get(
+        State(cfg): State<Arc<Cdrs230Config>>,
+        Path(cdr_id): Path<String>,
+    ) -> Response {
+        match cfg.get(&cdr_id) {
+            Some(cdr) => Json(OcpiResponse::success(cdr)).into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(OcpiResponse::<Cdr230>::error(
+                    OcpiStatusCode::UnknownLocation,
+                    format!("CDR {cdr_id} not found"),
+                )),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn cdrs_2_3_0_post(
+        State(cfg): State<Arc<Cdrs230Config>>,
+        Json(cdr): Json<Cdr230>,
+    ) -> Response {
+        let location_url = cfg.store(cdr);
+        let mut response = (
+            StatusCode::CREATED,
+            Json(OcpiResponse::<Cdr230>::success_empty()),
+        )
+            .into_response();
+        if let Ok(v) = location_url.parse() {
+            response.headers_mut().insert("location", v);
+        }
+        response
+    }
+
     /// Build an axum router for the **OCPI 2.3.0** Tariffs module — the 2.3.0
     /// counterpart to [`tariffs_2_1_1_router`] / [`tariffs_router`].
     ///
@@ -9806,6 +10616,200 @@ pub mod http {
         }
     }
 
+    // ── Locations receiver (OCPI 2.3.0) ────────────────────────────────────────
+
+    /// Build an axum router for the OCPI **2.3.0** Locations module **receiver**
+    /// interface (eMSP side).
+    ///
+    /// Exposes GET/PUT/PATCH at all three object levels on the client-owned path
+    /// `/locations/{country_code}/{party_id}/{location_id}[/{evse_uid}[/{connector_id}]]`
+    /// — transport-identical to the 2.2 [`locations_2_2_router`] and the 2.2.1
+    /// [`locations_router`]. The only difference is the object shape: the
+    /// PUT/PATCH bodies deserialize into the **2.3.0** composites
+    /// ([`Location230`] / [`Evse230`] / [`Connector230`]), so the additive 2.3.0
+    /// fields a client pushes — `Location.parking_places`/`help_phone`,
+    /// `Evse.parking`/`accepted_service_providers`, and the ISO 15118
+    /// `Connector.capabilities` — are landed in the store instead of being
+    /// silently dropped through the 2.2.1 struct, while a 2.2.1-only plug/power
+    /// enum or an over-length id is **rejected on deserialize** before it can
+    /// reach the store. A missing object is an explicit OCPI `2003`
+    /// (`UnknownLocation`), never a silent empty `200` — the server-side mirror
+    /// of the `OcpiClient::get_*_2_3_0` client-getter guard (#199).
+    ///
+    /// There is no sender `GET /locations` list route here; that is the CPO
+    /// sender role, served by the separate [`locations_2_3_0_sender_router`]
+    /// (#200) — kept apart because its 3-segment *flat* connector path would
+    /// otherwise collide with this router's 3-segment *owner* path.
+    ///
+    /// Spec: OCPI 2.3.0 — *Locations* module, eMSP (Receiver) Interface
+    /// (`specs/ocpi/2.3.0/mod_locations.asciidoc`).
+    pub fn locations_2_3_0_router(config: Arc<Locations230Config>) -> Router {
+        Router::new()
+            .route(
+                "/locations/{country_code}/{party_id}/{location_id}",
+                get(location_2_3_0_get)
+                    .put(location_2_3_0_put)
+                    .patch(location_2_3_0_patch),
+            )
+            .route(
+                "/locations/{country_code}/{party_id}/{location_id}/{evse_uid}",
+                get(evse_2_3_0_get)
+                    .put(evse_2_3_0_put)
+                    .patch(evse_2_3_0_patch),
+            )
+            .route(
+                "/locations/{country_code}/{party_id}/{location_id}/{evse_uid}/{connector_id}",
+                get(connector_2_3_0_get)
+                    .put(connector_2_3_0_put)
+                    .patch(connector_2_3_0_patch),
+            )
+            .with_state(config)
+    }
+
+    async fn location_2_3_0_get(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id)): Path<(String, String, String)>,
+    ) -> Response {
+        match cfg.get(&country_code, &party_id, &location_id) {
+            Some(location) => Json(OcpiResponse::success(location)).into_response(),
+            None => location_not_found::<Location230>(format!(
+                "no Location {country_code}/{party_id}/{location_id}"
+            )),
+        }
+    }
+
+    async fn location_2_3_0_put(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id)): Path<(String, String, String)>,
+        Json(location): Json<Location230>,
+    ) -> Response {
+        cfg.put(&country_code, &party_id, &location_id, location);
+        Json(OcpiResponse::<Location230>::success_empty()).into_response()
+    }
+
+    async fn location_2_3_0_patch(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id)): Path<(String, String, String)>,
+        Json(partial): Json<ocpi_types::serde_json::Value>,
+    ) -> Response {
+        write_result::<Location230>(
+            cfg.patch_location(&country_code, &party_id, &location_id, partial),
+            "Location",
+        )
+    }
+
+    async fn evse_2_3_0_get(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, evse_uid)): Path<(
+            String,
+            String,
+            String,
+            String,
+        )>,
+    ) -> Response {
+        match cfg.get_evse(&country_code, &party_id, &location_id, &evse_uid) {
+            Some(evse) => Json(OcpiResponse::success(evse)).into_response(),
+            None => location_not_found::<Evse230>(format!("no EVSE {evse_uid} in {location_id}")),
+        }
+    }
+
+    async fn evse_2_3_0_put(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, _evse_uid)): Path<(
+            String,
+            String,
+            String,
+            String,
+        )>,
+        Json(evse): Json<Evse230>,
+    ) -> Response {
+        write_result::<Evse230>(
+            cfg.put_evse(&country_code, &party_id, &location_id, evse),
+            "Location",
+        )
+    }
+
+    async fn evse_2_3_0_patch(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, evse_uid)): Path<(
+            String,
+            String,
+            String,
+            String,
+        )>,
+        Json(partial): Json<ocpi_types::serde_json::Value>,
+    ) -> Response {
+        write_result::<Evse230>(
+            cfg.patch_evse(&country_code, &party_id, &location_id, &evse_uid, partial),
+            "Location or EVSE",
+        )
+    }
+
+    async fn connector_2_3_0_get(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, evse_uid, connector_id)): Path<(
+            String,
+            String,
+            String,
+            String,
+            String,
+        )>,
+    ) -> Response {
+        match cfg.get_connector(
+            &country_code,
+            &party_id,
+            &location_id,
+            &evse_uid,
+            &connector_id,
+        ) {
+            Some(connector) => Json(OcpiResponse::success(connector)).into_response(),
+            None => location_not_found::<Connector230>(format!(
+                "no Connector {connector_id} in {evse_uid}"
+            )),
+        }
+    }
+
+    async fn connector_2_3_0_put(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, evse_uid, _connector_id)): Path<(
+            String,
+            String,
+            String,
+            String,
+            String,
+        )>,
+        Json(connector): Json<Connector230>,
+    ) -> Response {
+        write_result::<Connector230>(
+            cfg.put_connector(&country_code, &party_id, &location_id, &evse_uid, connector),
+            "Location or EVSE",
+        )
+    }
+
+    async fn connector_2_3_0_patch(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, evse_uid, connector_id)): Path<(
+            String,
+            String,
+            String,
+            String,
+            String,
+        )>,
+        Json(partial): Json<ocpi_types::serde_json::Value>,
+    ) -> Response {
+        write_result::<Connector230>(
+            cfg.patch_connector(
+                &country_code,
+                &party_id,
+                &location_id,
+                &evse_uid,
+                &connector_id,
+                partial,
+            ),
+            "Location, EVSE, or Connector",
+        )
+    }
+
     // ── Locations sender (OCPI 2.3.0) ──────────────────────────────────────────
 
     /// Build an axum router for the OCPI **2.3.0** Locations module **sender**
@@ -10034,6 +11038,216 @@ pub mod http {
             assert!(
                 body.contains("2003"),
                 "expected UnknownLocation 2003: {body}"
+            );
+        }
+    }
+
+    // ── Locations receiver handler tests (OCPI 2.3.0, #207) ─────────────────────
+    //
+    // Drive the `locations_2_3_0_router` handler fns directly (crate convention:
+    // no live socket) to prove a client-owned 2.3.0 Location *push* preserves the
+    // additive 2.3.0 fields through a PUT→GET round-trip, that a merge-PATCH
+    // touches only the targeted field, that a missing object is an explicit OCPI
+    // `2003`, and that an unknown enum value is rejected on deserialize.
+    #[cfg(test)]
+    mod locations_2_3_0_receiver_tests {
+        use super::*;
+
+        /// A spec-shaped **2.3.0** Location carrying every additive 2.3.0 field —
+        /// the fields a 2.2.1 struct would silently drop on ingest.
+        fn sample_location_2_3_0() -> Location230 {
+            ocpi_types::serde_json::from_value(ocpi_types::serde_json::json!({
+                "country_code": "NL",
+                "party_id": "TNM",
+                "id": "LOC230",
+                "publish": true,
+                "address": "Kerkstraat 1",
+                "city": "Amsterdam",
+                "country": "NLD",
+                "coordinates": { "latitude": "52.370216", "longitude": "4.895168" },
+                "parking_places": [{
+                    "id": "P1",
+                    "vehicle_types": ["DISABLED"],
+                    "restricted_to_type": true,
+                    "reservation_required": false
+                }],
+                "help_phone": "+31201234567",
+                "evses": [{
+                    "uid": "EVSE-1",
+                    "status": "AVAILABLE",
+                    "connectors": [{
+                        "id": "1",
+                        "standard": "IEC_62196_T2",
+                        "format": "SOCKET",
+                        "power_type": "AC_3_PHASE",
+                        "max_voltage": 400,
+                        "max_amperage": 32,
+                        "capabilities": ["ISO_15118_20_PLUG_AND_CHARGE"],
+                        "last_updated": "2024-06-01T10:00:00Z"
+                    }],
+                    "parking": [{ "parking_id": "P1" }],
+                    "accepted_service_providers": ["NL-TNM"],
+                    "last_updated": "2024-06-01T10:00:00Z"
+                }],
+                "time_zone": "Europe/Amsterdam",
+                "last_updated": "2024-06-01T10:00:00Z"
+            }))
+            .unwrap()
+        }
+
+        async fn body_string(resp: Response) -> String {
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            String::from_utf8(bytes.to_vec()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn put_then_get_round_trips_the_2_3_0_fields() {
+            let cfg = Arc::new(Locations230Config::new());
+
+            // Push a full Location onto the receiver.
+            let resp = location_2_3_0_put(
+                State(Arc::clone(&cfg)),
+                Path(("NL".to_owned(), "TNM".to_owned(), "LOC230".to_owned())),
+                Json(sample_location_2_3_0()),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            // GET it back — every additive 2.3.0 field survives the ingest.
+            let resp = location_2_3_0_get(
+                State(Arc::clone(&cfg)),
+                Path(("NL".to_owned(), "TNM".to_owned(), "LOC230".to_owned())),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_string(resp).await;
+            assert!(body.contains("parking_places"), "missing parking: {body}");
+            assert!(body.contains("help_phone"), "missing help_phone: {body}");
+            assert!(
+                body.contains("accepted_service_providers"),
+                "missing accepted_service_providers: {body}"
+            );
+            assert!(
+                body.contains("ISO_15118_20_PLUG_AND_CHARGE"),
+                "missing 15118 capability: {body}"
+            );
+
+            // Nested owner-qualified getters resolve too.
+            let resp = evse_2_3_0_get(
+                State(Arc::clone(&cfg)),
+                Path((
+                    "NL".to_owned(),
+                    "TNM".to_owned(),
+                    "LOC230".to_owned(),
+                    "EVSE-1".to_owned(),
+                )),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(body_string(resp)
+                .await
+                .contains("accepted_service_providers"));
+        }
+
+        #[tokio::test]
+        async fn merge_patch_updates_only_the_targeted_field() {
+            let cfg = Arc::new(Locations230Config::new());
+            cfg.put("NL", "TNM", "LOC230", sample_location_2_3_0());
+
+            // Patch only the Location `help_phone`; the parking report must remain.
+            let resp = location_2_3_0_patch(
+                State(Arc::clone(&cfg)),
+                Path(("NL".to_owned(), "TNM".to_owned(), "LOC230".to_owned())),
+                Json(ocpi_types::serde_json::json!({ "help_phone": "+31200000000" })),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            let stored = cfg.get("NL", "TNM", "LOC230").unwrap();
+            assert_eq!(
+                stored.help_phone.as_ref().map(|p| p.as_str()),
+                Some("+31200000000")
+            );
+            assert_eq!(stored.parking_places.len(), 1, "parking report clobbered");
+            assert_eq!(stored.evses.len(), 1, "evses clobbered by location patch");
+
+            // Merge-patch a nested Connector — only the targeted connector changes.
+            let resp = connector_2_3_0_patch(
+                State(Arc::clone(&cfg)),
+                Path((
+                    "NL".to_owned(),
+                    "TNM".to_owned(),
+                    "LOC230".to_owned(),
+                    "EVSE-1".to_owned(),
+                    "1".to_owned(),
+                )),
+                Json(ocpi_types::serde_json::json!({ "max_amperage": 16 })),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let conn = cfg
+                .get_connector("NL", "TNM", "LOC230", "EVSE-1", "1")
+                .unwrap();
+            assert_eq!(conn.max_amperage, 16);
+            // The ISO 15118 capability was not part of the patch and must survive.
+            assert!(
+                !conn.capabilities.is_empty(),
+                "connector capabilities clobbered by merge-patch"
+            );
+        }
+
+        #[tokio::test]
+        async fn missing_object_maps_to_2003() {
+            let cfg = Arc::new(Locations230Config::new());
+
+            let resp = location_2_3_0_get(
+                State(Arc::clone(&cfg)),
+                Path(("NL".to_owned(), "TNM".to_owned(), "NOPE".to_owned())),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+            assert!(body_string(resp).await.contains("2003"));
+
+            // PATCH of an unknown Location is a NotFound → 404, never a silent 200.
+            let resp = location_2_3_0_patch(
+                State(Arc::clone(&cfg)),
+                Path(("NL".to_owned(), "TNM".to_owned(), "NOPE".to_owned())),
+                Json(ocpi_types::serde_json::json!({ "help_phone": "+3120" })),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+
+        #[test]
+        fn receiver_rejects_unknown_enum_values_on_deserialize() {
+            // 2.3.0 is an additive superset of 2.2.1, so it accepts every 2.2.1
+            // enum; the receiver's real guard is that a wholly *unknown* enum value
+            // is rejected on deserialize rather than silently coerced. An unknown
+            // `standard` fails to decode into the strict `Connector230`.
+            let bad_standard = ocpi_types::serde_json::json!({
+                "id": "1",
+                "standard": "NOT_A_REAL_PLUG",
+                "format": "SOCKET",
+                "power_type": "AC_3_PHASE",
+                "max_voltage": 400,
+                "max_amperage": 32,
+                "last_updated": "2024-06-01T10:00:00Z"
+            });
+            assert!(
+                ocpi_types::serde_json::from_value::<Connector230>(bad_standard).is_err(),
+                "2.3.0 Connector must reject an unknown ConnectorType"
+            );
+
+            // An unknown ISO 15118 capability inside a full Location body is
+            // likewise rejected on the receiver path.
+            let mut loc = ocpi_types::serde_json::to_value(sample_location_2_3_0()).unwrap();
+            loc["evses"][0]["connectors"][0]["capabilities"] =
+                ocpi_types::serde_json::json!(["ISO_99999_MADE_UP"]);
+            assert!(
+                ocpi_types::serde_json::from_value::<Location230>(loc).is_err(),
+                "2.3.0 Location must reject an unknown Connector capability"
             );
         }
     }
