@@ -6149,6 +6149,144 @@ impl Locations230Config {
             .into_iter()
             .find(|c| c.id.as_str() == connector_id)
     }
+
+    // ── Receiver surface (eMSP side, owner-qualified) — used by
+    // `http::locations_2_3_0_router`. Mirrors [`Locations22Config`] exactly,
+    // retargeted to the `v2_3_0` composites so the additive 2.3.0 fields are
+    // preserved through a client-owned Location *push*. ─────────────────────
+
+    /// Retrieve a nested EVSE by its `uid`, owner-qualified (receiver path).
+    #[must_use]
+    pub fn get_evse(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse_uid: &str,
+    ) -> Option<Evse230> {
+        self.get(country_code, party_id, location_id)?
+            .evses
+            .into_iter()
+            .find(|e| e.uid.as_str() == evse_uid)
+    }
+
+    /// Retrieve a nested Connector by its `id`, owner-qualified (receiver path).
+    #[must_use]
+    pub fn get_connector(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse_uid: &str,
+        connector_id: &str,
+    ) -> Option<Connector230> {
+        self.get_evse(country_code, party_id, location_id, evse_uid)?
+            .connectors
+            .into_iter()
+            .find(|c| c.id.as_str() == connector_id)
+    }
+
+    /// Apply a JSON merge-patch to an existing Location (`NotFound` if absent).
+    pub fn patch_location(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        let mut map = self.locations.write().expect("lock not poisoned");
+        let current = map.get(&key).ok_or(ServerError::NotFound)?;
+        let updated = apply_merge_patch(current, partial)?;
+        map.insert(key, updated);
+        Ok(())
+    }
+
+    /// Upsert a nested EVSE (`NotFound` if the parent Location is unknown).
+    pub fn put_evse(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse: Evse230,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        let mut map = self.locations.write().expect("lock not poisoned");
+        let location = map.get_mut(&key).ok_or(ServerError::NotFound)?;
+        upsert_by(&mut location.evses, evse, |e| e.uid.as_str().to_owned());
+        Ok(())
+    }
+
+    /// Merge-patch a nested EVSE (`NotFound` if Location or EVSE is unknown).
+    pub fn patch_evse(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse_uid: &str,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        let mut map = self.locations.write().expect("lock not poisoned");
+        let location = map.get_mut(&key).ok_or(ServerError::NotFound)?;
+        let evse = location
+            .evses
+            .iter_mut()
+            .find(|e| e.uid.as_str() == evse_uid)
+            .ok_or(ServerError::NotFound)?;
+        *evse = apply_merge_patch(evse, partial)?;
+        Ok(())
+    }
+
+    /// Upsert a nested Connector (`NotFound` if Location or EVSE is unknown).
+    pub fn put_connector(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse_uid: &str,
+        connector: Connector230,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        let mut map = self.locations.write().expect("lock not poisoned");
+        let location = map.get_mut(&key).ok_or(ServerError::NotFound)?;
+        let evse = location
+            .evses
+            .iter_mut()
+            .find(|e| e.uid.as_str() == evse_uid)
+            .ok_or(ServerError::NotFound)?;
+        upsert_by(&mut evse.connectors, connector, |c| {
+            c.id.as_str().to_owned()
+        });
+        Ok(())
+    }
+
+    /// Merge-patch a nested Connector (`NotFound` if any level is unknown).
+    pub fn patch_connector(
+        &self,
+        country_code: &str,
+        party_id: &str,
+        location_id: &str,
+        evse_uid: &str,
+        connector_id: &str,
+        partial: ocpi_types::serde_json::Value,
+    ) -> Result<(), ServerError> {
+        let key = Self::composite_key(country_code, party_id, location_id);
+        let mut map = self.locations.write().expect("lock not poisoned");
+        let location = map.get_mut(&key).ok_or(ServerError::NotFound)?;
+        let evse = location
+            .evses
+            .iter_mut()
+            .find(|e| e.uid.as_str() == evse_uid)
+            .ok_or(ServerError::NotFound)?;
+        let connector = evse
+            .connectors
+            .iter_mut()
+            .find(|c| c.id.as_str() == connector_id)
+            .ok_or(ServerError::NotFound)?;
+        *connector = apply_merge_patch(connector, partial)?;
+        Ok(())
+    }
 }
 
 impl Default for Locations230Config {
@@ -9806,6 +9944,200 @@ pub mod http {
         }
     }
 
+    // ── Locations receiver (OCPI 2.3.0) ────────────────────────────────────────
+
+    /// Build an axum router for the OCPI **2.3.0** Locations module **receiver**
+    /// interface (eMSP side).
+    ///
+    /// Exposes GET/PUT/PATCH at all three object levels on the client-owned path
+    /// `/locations/{country_code}/{party_id}/{location_id}[/{evse_uid}[/{connector_id}]]`
+    /// — transport-identical to the 2.2 [`locations_2_2_router`] and the 2.2.1
+    /// [`locations_router`]. The only difference is the object shape: the
+    /// PUT/PATCH bodies deserialize into the **2.3.0** composites
+    /// ([`Location230`] / [`Evse230`] / [`Connector230`]), so the additive 2.3.0
+    /// fields a client pushes — `Location.parking_places`/`help_phone`,
+    /// `Evse.parking`/`accepted_service_providers`, and the ISO 15118
+    /// `Connector.capabilities` — are landed in the store instead of being
+    /// silently dropped through the 2.2.1 struct, while a 2.2.1-only plug/power
+    /// enum or an over-length id is **rejected on deserialize** before it can
+    /// reach the store. A missing object is an explicit OCPI `2003`
+    /// (`UnknownLocation`), never a silent empty `200` — the server-side mirror
+    /// of the `OcpiClient::get_*_2_3_0` client-getter guard (#199).
+    ///
+    /// There is no sender `GET /locations` list route here; that is the CPO
+    /// sender role, served by the separate [`locations_2_3_0_sender_router`]
+    /// (#200) — kept apart because its 3-segment *flat* connector path would
+    /// otherwise collide with this router's 3-segment *owner* path.
+    ///
+    /// Spec: OCPI 2.3.0 — *Locations* module, eMSP (Receiver) Interface
+    /// (`specs/ocpi/2.3.0/mod_locations.asciidoc`).
+    pub fn locations_2_3_0_router(config: Arc<Locations230Config>) -> Router {
+        Router::new()
+            .route(
+                "/locations/{country_code}/{party_id}/{location_id}",
+                get(location_2_3_0_get)
+                    .put(location_2_3_0_put)
+                    .patch(location_2_3_0_patch),
+            )
+            .route(
+                "/locations/{country_code}/{party_id}/{location_id}/{evse_uid}",
+                get(evse_2_3_0_get)
+                    .put(evse_2_3_0_put)
+                    .patch(evse_2_3_0_patch),
+            )
+            .route(
+                "/locations/{country_code}/{party_id}/{location_id}/{evse_uid}/{connector_id}",
+                get(connector_2_3_0_get)
+                    .put(connector_2_3_0_put)
+                    .patch(connector_2_3_0_patch),
+            )
+            .with_state(config)
+    }
+
+    async fn location_2_3_0_get(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id)): Path<(String, String, String)>,
+    ) -> Response {
+        match cfg.get(&country_code, &party_id, &location_id) {
+            Some(location) => Json(OcpiResponse::success(location)).into_response(),
+            None => location_not_found::<Location230>(format!(
+                "no Location {country_code}/{party_id}/{location_id}"
+            )),
+        }
+    }
+
+    async fn location_2_3_0_put(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id)): Path<(String, String, String)>,
+        Json(location): Json<Location230>,
+    ) -> Response {
+        cfg.put(&country_code, &party_id, &location_id, location);
+        Json(OcpiResponse::<Location230>::success_empty()).into_response()
+    }
+
+    async fn location_2_3_0_patch(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id)): Path<(String, String, String)>,
+        Json(partial): Json<ocpi_types::serde_json::Value>,
+    ) -> Response {
+        write_result::<Location230>(
+            cfg.patch_location(&country_code, &party_id, &location_id, partial),
+            "Location",
+        )
+    }
+
+    async fn evse_2_3_0_get(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, evse_uid)): Path<(
+            String,
+            String,
+            String,
+            String,
+        )>,
+    ) -> Response {
+        match cfg.get_evse(&country_code, &party_id, &location_id, &evse_uid) {
+            Some(evse) => Json(OcpiResponse::success(evse)).into_response(),
+            None => location_not_found::<Evse230>(format!("no EVSE {evse_uid} in {location_id}")),
+        }
+    }
+
+    async fn evse_2_3_0_put(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, _evse_uid)): Path<(
+            String,
+            String,
+            String,
+            String,
+        )>,
+        Json(evse): Json<Evse230>,
+    ) -> Response {
+        write_result::<Evse230>(
+            cfg.put_evse(&country_code, &party_id, &location_id, evse),
+            "Location",
+        )
+    }
+
+    async fn evse_2_3_0_patch(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, evse_uid)): Path<(
+            String,
+            String,
+            String,
+            String,
+        )>,
+        Json(partial): Json<ocpi_types::serde_json::Value>,
+    ) -> Response {
+        write_result::<Evse230>(
+            cfg.patch_evse(&country_code, &party_id, &location_id, &evse_uid, partial),
+            "Location or EVSE",
+        )
+    }
+
+    async fn connector_2_3_0_get(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, evse_uid, connector_id)): Path<(
+            String,
+            String,
+            String,
+            String,
+            String,
+        )>,
+    ) -> Response {
+        match cfg.get_connector(
+            &country_code,
+            &party_id,
+            &location_id,
+            &evse_uid,
+            &connector_id,
+        ) {
+            Some(connector) => Json(OcpiResponse::success(connector)).into_response(),
+            None => location_not_found::<Connector230>(format!(
+                "no Connector {connector_id} in {evse_uid}"
+            )),
+        }
+    }
+
+    async fn connector_2_3_0_put(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, evse_uid, _connector_id)): Path<(
+            String,
+            String,
+            String,
+            String,
+            String,
+        )>,
+        Json(connector): Json<Connector230>,
+    ) -> Response {
+        write_result::<Connector230>(
+            cfg.put_connector(&country_code, &party_id, &location_id, &evse_uid, connector),
+            "Location or EVSE",
+        )
+    }
+
+    async fn connector_2_3_0_patch(
+        State(cfg): State<Arc<Locations230Config>>,
+        Path((country_code, party_id, location_id, evse_uid, connector_id)): Path<(
+            String,
+            String,
+            String,
+            String,
+            String,
+        )>,
+        Json(partial): Json<ocpi_types::serde_json::Value>,
+    ) -> Response {
+        write_result::<Connector230>(
+            cfg.patch_connector(
+                &country_code,
+                &party_id,
+                &location_id,
+                &evse_uid,
+                &connector_id,
+                partial,
+            ),
+            "Location, EVSE, or Connector",
+        )
+    }
+
     // ── Locations sender (OCPI 2.3.0) ──────────────────────────────────────────
 
     /// Build an axum router for the OCPI **2.3.0** Locations module **sender**
@@ -10034,6 +10366,216 @@ pub mod http {
             assert!(
                 body.contains("2003"),
                 "expected UnknownLocation 2003: {body}"
+            );
+        }
+    }
+
+    // ── Locations receiver handler tests (OCPI 2.3.0, #207) ─────────────────────
+    //
+    // Drive the `locations_2_3_0_router` handler fns directly (crate convention:
+    // no live socket) to prove a client-owned 2.3.0 Location *push* preserves the
+    // additive 2.3.0 fields through a PUT→GET round-trip, that a merge-PATCH
+    // touches only the targeted field, that a missing object is an explicit OCPI
+    // `2003`, and that an unknown enum value is rejected on deserialize.
+    #[cfg(test)]
+    mod locations_2_3_0_receiver_tests {
+        use super::*;
+
+        /// A spec-shaped **2.3.0** Location carrying every additive 2.3.0 field —
+        /// the fields a 2.2.1 struct would silently drop on ingest.
+        fn sample_location_2_3_0() -> Location230 {
+            ocpi_types::serde_json::from_value(ocpi_types::serde_json::json!({
+                "country_code": "NL",
+                "party_id": "TNM",
+                "id": "LOC230",
+                "publish": true,
+                "address": "Kerkstraat 1",
+                "city": "Amsterdam",
+                "country": "NLD",
+                "coordinates": { "latitude": "52.370216", "longitude": "4.895168" },
+                "parking_places": [{
+                    "id": "P1",
+                    "vehicle_types": ["DISABLED"],
+                    "restricted_to_type": true,
+                    "reservation_required": false
+                }],
+                "help_phone": "+31201234567",
+                "evses": [{
+                    "uid": "EVSE-1",
+                    "status": "AVAILABLE",
+                    "connectors": [{
+                        "id": "1",
+                        "standard": "IEC_62196_T2",
+                        "format": "SOCKET",
+                        "power_type": "AC_3_PHASE",
+                        "max_voltage": 400,
+                        "max_amperage": 32,
+                        "capabilities": ["ISO_15118_20_PLUG_AND_CHARGE"],
+                        "last_updated": "2024-06-01T10:00:00Z"
+                    }],
+                    "parking": [{ "parking_id": "P1" }],
+                    "accepted_service_providers": ["NL-TNM"],
+                    "last_updated": "2024-06-01T10:00:00Z"
+                }],
+                "time_zone": "Europe/Amsterdam",
+                "last_updated": "2024-06-01T10:00:00Z"
+            }))
+            .unwrap()
+        }
+
+        async fn body_string(resp: Response) -> String {
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            String::from_utf8(bytes.to_vec()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn put_then_get_round_trips_the_2_3_0_fields() {
+            let cfg = Arc::new(Locations230Config::new());
+
+            // Push a full Location onto the receiver.
+            let resp = location_2_3_0_put(
+                State(Arc::clone(&cfg)),
+                Path(("NL".to_owned(), "TNM".to_owned(), "LOC230".to_owned())),
+                Json(sample_location_2_3_0()),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            // GET it back — every additive 2.3.0 field survives the ingest.
+            let resp = location_2_3_0_get(
+                State(Arc::clone(&cfg)),
+                Path(("NL".to_owned(), "TNM".to_owned(), "LOC230".to_owned())),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_string(resp).await;
+            assert!(body.contains("parking_places"), "missing parking: {body}");
+            assert!(body.contains("help_phone"), "missing help_phone: {body}");
+            assert!(
+                body.contains("accepted_service_providers"),
+                "missing accepted_service_providers: {body}"
+            );
+            assert!(
+                body.contains("ISO_15118_20_PLUG_AND_CHARGE"),
+                "missing 15118 capability: {body}"
+            );
+
+            // Nested owner-qualified getters resolve too.
+            let resp = evse_2_3_0_get(
+                State(Arc::clone(&cfg)),
+                Path((
+                    "NL".to_owned(),
+                    "TNM".to_owned(),
+                    "LOC230".to_owned(),
+                    "EVSE-1".to_owned(),
+                )),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(body_string(resp)
+                .await
+                .contains("accepted_service_providers"));
+        }
+
+        #[tokio::test]
+        async fn merge_patch_updates_only_the_targeted_field() {
+            let cfg = Arc::new(Locations230Config::new());
+            cfg.put("NL", "TNM", "LOC230", sample_location_2_3_0());
+
+            // Patch only the Location `help_phone`; the parking report must remain.
+            let resp = location_2_3_0_patch(
+                State(Arc::clone(&cfg)),
+                Path(("NL".to_owned(), "TNM".to_owned(), "LOC230".to_owned())),
+                Json(ocpi_types::serde_json::json!({ "help_phone": "+31200000000" })),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            let stored = cfg.get("NL", "TNM", "LOC230").unwrap();
+            assert_eq!(
+                stored.help_phone.as_ref().map(|p| p.as_str()),
+                Some("+31200000000")
+            );
+            assert_eq!(stored.parking_places.len(), 1, "parking report clobbered");
+            assert_eq!(stored.evses.len(), 1, "evses clobbered by location patch");
+
+            // Merge-patch a nested Connector — only the targeted connector changes.
+            let resp = connector_2_3_0_patch(
+                State(Arc::clone(&cfg)),
+                Path((
+                    "NL".to_owned(),
+                    "TNM".to_owned(),
+                    "LOC230".to_owned(),
+                    "EVSE-1".to_owned(),
+                    "1".to_owned(),
+                )),
+                Json(ocpi_types::serde_json::json!({ "max_amperage": 16 })),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let conn = cfg
+                .get_connector("NL", "TNM", "LOC230", "EVSE-1", "1")
+                .unwrap();
+            assert_eq!(conn.max_amperage, 16);
+            // The ISO 15118 capability was not part of the patch and must survive.
+            assert!(
+                !conn.capabilities.is_empty(),
+                "connector capabilities clobbered by merge-patch"
+            );
+        }
+
+        #[tokio::test]
+        async fn missing_object_maps_to_2003() {
+            let cfg = Arc::new(Locations230Config::new());
+
+            let resp = location_2_3_0_get(
+                State(Arc::clone(&cfg)),
+                Path(("NL".to_owned(), "TNM".to_owned(), "NOPE".to_owned())),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+            assert!(body_string(resp).await.contains("2003"));
+
+            // PATCH of an unknown Location is a NotFound → 404, never a silent 200.
+            let resp = location_2_3_0_patch(
+                State(Arc::clone(&cfg)),
+                Path(("NL".to_owned(), "TNM".to_owned(), "NOPE".to_owned())),
+                Json(ocpi_types::serde_json::json!({ "help_phone": "+3120" })),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+
+        #[test]
+        fn receiver_rejects_unknown_enum_values_on_deserialize() {
+            // 2.3.0 is an additive superset of 2.2.1, so it accepts every 2.2.1
+            // enum; the receiver's real guard is that a wholly *unknown* enum value
+            // is rejected on deserialize rather than silently coerced. An unknown
+            // `standard` fails to decode into the strict `Connector230`.
+            let bad_standard = ocpi_types::serde_json::json!({
+                "id": "1",
+                "standard": "NOT_A_REAL_PLUG",
+                "format": "SOCKET",
+                "power_type": "AC_3_PHASE",
+                "max_voltage": 400,
+                "max_amperage": 32,
+                "last_updated": "2024-06-01T10:00:00Z"
+            });
+            assert!(
+                ocpi_types::serde_json::from_value::<Connector230>(bad_standard).is_err(),
+                "2.3.0 Connector must reject an unknown ConnectorType"
+            );
+
+            // An unknown ISO 15118 capability inside a full Location body is
+            // likewise rejected on the receiver path.
+            let mut loc = ocpi_types::serde_json::to_value(sample_location_2_3_0()).unwrap();
+            loc["evses"][0]["connectors"][0]["capabilities"] =
+                ocpi_types::serde_json::json!(["ISO_99999_MADE_UP"]);
+            assert!(
+                ocpi_types::serde_json::from_value::<Location230>(loc).is_err(),
+                "2.3.0 Location must reject an unknown Connector capability"
             );
         }
     }
