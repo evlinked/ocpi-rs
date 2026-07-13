@@ -345,5 +345,80 @@ mod tests {
         let _: fn(crate::v2_2_1::StartSession) -> super::StartSession = |x| x;
         let _: fn(crate::v2_2_1::ChargingProfile) -> super::ChargingProfile = |x| x;
         let _: fn(crate::v2_2_1::ClientInfo) -> super::ClientInfo = |x| x; // HubClientInfo
+
+        // The **Versions** layer (the role-bearing `Endpoint`/`VersionDetails`)
+        // arrived in 2.2 and is unchanged in 2.3.0, so `v2_3_0` re-exports the
+        // shared `crate::version` types rather than forking them (there is no
+        // `v2_2_1`-local `Endpoint`, so these fence against `crate::version`
+        // directly). The closures stop compiling if a future edit forks the
+        // version layer into a `v2_3_0`-local type — the same reuse fence the
+        // functional modules above get.
+        // Versions layer:
+        let _: fn(crate::version::Endpoint) -> super::Endpoint = |x| x;
+        let _: fn(crate::version::VersionDetails) -> super::VersionDetails = |x| x;
+    }
+
+    #[test]
+    fn token_2_3_0_reuse_wire_is_identical_to_2_2_1() {
+        // Tokens carries **no** 2.3.0 wire delta (see the 2.3.0 changelog — the
+        // delta set is Payments, Locations, tax, Credentials, extensibility, none
+        // of which touches Tokens), so `v2_3_0::Token` MUST be the very same type
+        // as `v2_2_1::Token` — the compile-time identity is asserted in
+        // `reuse_types_stay_aliases_of_2_2_1`. This checks the claim one layer
+        // down: the *wire* agrees. A token parsed on the `v2_3_0` path and the
+        // 2.2.1 path is the same value and serializes to the same bytes, so a
+        // 2.3.0 party drives Tokens over the unqualified 2.2.1 surface unchanged.
+        let json = r#"{
+            "country_code": "DE",
+            "party_id": "TNM",
+            "uid": "12345678905880",
+            "type": "RFID",
+            "contract_id": "DE8ACC12E46L89",
+            "issuer": "TheNewMotion",
+            "valid": true,
+            "whitelist": "ALLOWED",
+            "last_updated": "2018-12-10T17:16:15Z"
+        }"#;
+        let via_2_3_0: super::Token = serde_json::from_str(json).unwrap();
+        let via_2_2_1: crate::v2_2_1::Token = serde_json::from_str(json).unwrap();
+        // Same nominal type, same value.
+        assert_eq!(via_2_3_0, via_2_2_1);
+        // Same bytes on the wire — no field added, dropped, or renamed for 2.3.0.
+        assert_eq!(
+            serde_json::to_value(&via_2_3_0).unwrap(),
+            serde_json::to_value(&via_2_2_1).unwrap(),
+        );
+        // And it round-trips cleanly on the `v2_3_0` path.
+        let out = serde_json::to_string(&via_2_3_0).unwrap();
+        let back: super::Token = serde_json::from_str(&out).unwrap();
+        assert_eq!(back, via_2_3_0);
+    }
+
+    #[test]
+    fn charging_profile_2_3_0_reuse_wire_is_identical_to_2_2_1() {
+        // ChargingProfiles carries no 2.3.0 wire delta either — the same reuse
+        // claim as Tokens, verified at the wire layer against the 2.2.1 type.
+        let json = r#"{
+            "start_date_time": "2019-01-01T12:00:00Z",
+            "duration": 3600,
+            "charging_rate_unit": "W",
+            "min_charging_rate": 1.0,
+            "charging_profile_period": [
+                { "start_period": 0, "limit": 11000.0 },
+                { "start_period": 1800, "limit": 6000.0 }
+            ]
+        }"#;
+        let via_2_3_0: super::ChargingProfile = serde_json::from_str(json).unwrap();
+        let via_2_2_1: crate::v2_2_1::ChargingProfile = serde_json::from_str(json).unwrap();
+        // `ChargingProfile` holds `f64`s so it is `PartialEq` (not `Eq`); the
+        // fixture uses exactly-representable values, so equality is stable here.
+        assert_eq!(via_2_3_0, via_2_2_1);
+        assert_eq!(
+            serde_json::to_value(&via_2_3_0).unwrap(),
+            serde_json::to_value(&via_2_2_1).unwrap(),
+        );
+        let out = serde_json::to_string(&via_2_3_0).unwrap();
+        let back: super::ChargingProfile = serde_json::from_str(&out).unwrap();
+        assert_eq!(back, via_2_3_0);
     }
 }
