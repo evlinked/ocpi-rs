@@ -81,6 +81,11 @@ use ocpi_types::v2_2::StartSession as StartSession22;
 // are brand-new 2.3.0 types (no 2.2.1 predecessor), fetched by the PTP-Sender
 // getters below. See `crate::OcpiClient::get_terminals_2_3_0` and friends.
 use ocpi_types::v2_3_0::{FinancialAdviceConfirmation, Terminal};
+// The OCPI 2.3.0 Session object transported by the `*_session*_2_3_0` methods —
+// the 2.2.1 shape with `total_cost` reworked onto the tax-itemised 2.3.0 `Price`
+// (an itemised `TaxAmount` list for North-American GST/QST). Every other field
+// is wire-identical to 2.2.1. See `crate::OcpiClient::get_sessions_2_3_0`.
+use ocpi_types::v2_3_0::Session as Session230;
 use url::Url;
 
 fn token_type_str(t: TokenType) -> &'static str {
@@ -3522,6 +3527,189 @@ impl OcpiClient {
         let response = response.error_for_status()?;
         let envelope: OcpiResponse<FinancialAdviceConfirmation> = response.json().await?;
         envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    // ── Sessions (2.3.0) ─────────────────────────────────────────────────────────
+
+    /// Fetch a paginated list of **OCPI 2.3.0** Sessions from a CPO's Sender
+    /// interface (`GET {url}`).
+    ///
+    /// Mirrors [`OcpiClient::get_sessions`] but deserializes the *2.3.0* wire
+    /// shape ([`ocpi_types::v2_3_0::Session`]): the 2.2.1 `Session` with its
+    /// `total_cost` reworked onto the tax-itemised 2.3.0 `Price`, so a
+    /// North-American running total carrying an itemised GST+QST breakdown
+    /// survives the hop instead of collapsing into the VAT-only 2.2.1 field.
+    /// Sessions is a client-owned object, so the sender list path is flat —
+    /// identical to 2.2.1/2.1.1; only the payload type differs.
+    ///
+    /// `url` is the absolute URL of the CPO's 2.3.0 Sessions sender endpoint;
+    /// `params` carries `date_from`, `date_to`, `offset`, and `limit`. Use
+    /// [`PaginationMeta::next_url`] to retrieve subsequent pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// envelope carries no data.
+    ///
+    /// See `specs/ocpi/2.3.0/mod_sessions.asciidoc` — Sender Interface, GET List.
+    pub async fn get_sessions_2_3_0(
+        &self,
+        url: &str,
+        params: PaginatedParams,
+    ) -> Result<(Vec<Session230>, PaginationMeta), ClientError> {
+        let mut parsed = url::Url::parse(url)?;
+        if let Some(date_from) = params.date_from {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_from", &date_from.to_rfc3339());
+        }
+        if let Some(date_to) = params.date_to {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_to", &date_to.to_rfc3339());
+        }
+        if let Some(offset) = params.offset {
+            parsed
+                .query_pairs_mut()
+                .append_pair("offset", &offset.to_string());
+        }
+        if let Some(limit) = params.limit {
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .send()
+            .await?
+            .error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<Session230>> = response.json().await?;
+        let sessions = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((sessions, meta))
+    }
+
+    /// Fetch a single **OCPI 2.3.0** Session by its composite key from an eMSP's
+    /// Receiver interface
+    /// (`GET {url}/{country_code}/{party_id}/{session_id}`).
+    ///
+    /// Per `specs/ocpi/2.3.0/mod_sessions.asciidoc` Sessions is a client-owned
+    /// object, so the receiver path carries the `{country_code}/{party_id}`
+    /// segments — identical to 2.2.1's [`OcpiClient::get_session`]; only the
+    /// payload type differs.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_session_2_3_0(
+        &self,
+        url: &str,
+        country_code: &str,
+        party_id: &str,
+        session_id: &str,
+    ) -> Result<Session230, ClientError> {
+        let endpoint = join_segments(url, &[country_code, party_id, session_id]);
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Session230> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Create or replace an **OCPI 2.3.0** Session on the remote eMSP's Receiver
+    /// interface (`PUT {url}/{country_code}/{party_id}/{session_id}`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn put_session_2_3_0(
+        &self,
+        url: &str,
+        country_code: &str,
+        party_id: &str,
+        session_id: &str,
+        session: &Session230,
+    ) -> Result<(), ClientError> {
+        let endpoint = join_segments(url, &[country_code, party_id, session_id]);
+        self.http
+            .put(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .json(session)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Apply a partial update (JSON merge-patch, RFC 7396) to an **OCPI 2.3.0**
+    /// Session on the remote eMSP's Receiver interface
+    /// (`PATCH {url}/{country_code}/{party_id}/{session_id}`).
+    ///
+    /// `partial` is any `Serialize` value; use a struct with
+    /// `#[serde(skip_serializing_if = "Option::is_none")]` fields, or a
+    /// `serde_json::Value` map, to send only the changed fields.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the server returns HTTP 404.
+    /// - [`ClientError::Http`] on network or server errors.
+    pub async fn patch_session_2_3_0<T: ocpi_types::serde::Serialize>(
+        &self,
+        url: &str,
+        country_code: &str,
+        party_id: &str,
+        session_id: &str,
+        partial: &T,
+    ) -> Result<(), ClientError> {
+        let endpoint = join_segments(url, &[country_code, party_id, session_id]);
+        let response = self
+            .http
+            .patch(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .json(partial)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        response.error_for_status()?;
+        Ok(())
     }
 }
 
