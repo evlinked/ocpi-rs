@@ -111,6 +111,12 @@ use ocpi_types::v2_3_0::payments::{FinancialAdviceConfirmation, Terminal};
 // (`Location.parking_places`/`help_phone`, `Evse.parking`/
 // `accepted_service_providers`, and the ISO 15118 `Connector.capabilities`).
 use ocpi_types::v2_3_0::{Connector as Connector230, Evse as Evse230, Location as Location230};
+// The OCPI 2.3.0 Credentials object (the `hub_party_id` fork of the 2.2.1
+// shape, #179), aliased to keep it distinct from the 2.2.1 `Credentials`
+// imported above. Served by [`http::credentials_2_3_0_router`] via
+// [`Credentials230Config`]; 2.3.0 reuses the 2.2.1 role-bearing Versions layer,
+// so the registration fetch-back runs over the same [`VersionFetcher`].
+use ocpi_types::v2_3_0::Credentials as Credentials230;
 
 // ── ServerError ───────────────────────────────────────────────────────────────
 
@@ -924,6 +930,227 @@ impl Credentials2111Config {
     /// Unlike [`delete`](Self::delete) this never errors on an unknown token —
     /// it is used to burn the single-use bootstrap *Token A* once registration
     /// completes. Returns `true` if the token was present.
+    pub fn invalidate(&self, token: &str) -> bool {
+        self.registered
+            .write()
+            .expect("lock not poisoned")
+            .remove(token)
+            .is_some()
+    }
+
+    /// Remove the registration for `token`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotRegistered`] if `token` is not in the registry.
+    pub fn delete(&self, token: &str) -> Result<(), ServerError> {
+        let mut map = self.registered.write().expect("lock not poisoned");
+        if !map.contains_key(token) {
+            return Err(ServerError::NotRegistered);
+        }
+        map.remove(token);
+        Ok(())
+    }
+}
+
+// ── Credentials230Config (OCPI 2.3.0) ───────────────────────────────────────
+
+/// A registered remote party on the **OCPI 2.3.0** handshake: their
+/// [`Credentials230`] plus, when the registration fetch-back ran, the endpoint
+/// catalogue fetched from their `/versions` details.
+#[derive(Debug, Clone)]
+pub struct Registered230Party {
+    /// The 2.3.0 credentials object the party presented at registration.
+    pub credentials: Credentials230,
+    /// Endpoints fetched from the party's selected version details, or `None`
+    /// when no [`VersionFetcher`] was configured (fetch-back skipped).
+    pub endpoints: Option<Vec<Endpoint>>,
+}
+
+/// An in-memory credentials store for the **OCPI 2.3.0** registration handshake
+/// — the 2.3.0 counterpart to [`CredentialsConfig`], serving/storing the
+/// [`Credentials230`] fork so a Hub partner's `hub_party_id` survives a real
+/// Token A→B→C exchange (#206).
+///
+/// 2.3.0 reuses the 2.2.1 role-bearing Versions layer verbatim, so — unlike the
+/// role-less 2.1.1 path ([`Credentials2111Config`]) — this shares the same
+/// [`VersionFetcher`] transport as [`CredentialsConfig`]; only the (de)serialize
+/// target forks. Thread-safe via interior mutability (`RwLock`); wrap in `Arc`
+/// to share across the handlers of [`http::credentials_2_3_0_router`].
+pub struct Credentials230Config {
+    /// The credentials this server returns on every successful request.
+    pub own_credentials: Credentials230,
+    registered: std::sync::RwLock<std::collections::HashMap<String, Registered230Party>>,
+    supported_versions: Vec<VersionNumber>,
+    fetcher: Option<std::sync::Arc<dyn VersionFetcher>>,
+}
+
+impl std::fmt::Debug for Credentials230Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials230Config")
+            .field("own_credentials", &self.own_credentials)
+            .field(
+                "registered_count",
+                &self.registered.read().map(|m| m.len()).unwrap_or(0),
+            )
+            .field("supported_versions", &self.supported_versions)
+            .field("fetch_back", &self.fetcher.is_some())
+            .finish()
+    }
+}
+
+impl Credentials230Config {
+    /// Create a new 2.3.0 registry with the given server credentials and no
+    /// registration fetch-back (parties register without an endpoint catalogue).
+    #[must_use]
+    pub fn new(own_credentials: Credentials230) -> Self {
+        Self {
+            own_credentials,
+            registered: std::sync::RwLock::new(std::collections::HashMap::new()),
+            supported_versions: vec![VersionNumber::V2_3_0],
+            fetcher: None,
+        }
+    }
+
+    /// Create a 2.3.0 registry that performs the OCPI registration fetch-back
+    /// (mirrors [`CredentialsConfig::new_with_fetcher`]; any failure surfaces as
+    /// OCPI status code `3001`).
+    #[must_use]
+    pub fn new_with_fetcher(
+        own_credentials: Credentials230,
+        supported_versions: Vec<VersionNumber>,
+        fetcher: std::sync::Arc<dyn VersionFetcher>,
+    ) -> Self {
+        Self {
+            own_credentials,
+            registered: std::sync::RwLock::new(std::collections::HashMap::new()),
+            supported_versions,
+            fetcher: Some(fetcher),
+        }
+    }
+
+    /// Returns `true` if `token` belongs to a registered party.
+    #[must_use]
+    pub fn is_registered(&self, token: &str) -> bool {
+        self.registered
+            .read()
+            .expect("lock not poisoned")
+            .contains_key(token)
+    }
+
+    /// Register a new party under `token`, without an endpoint catalogue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::AlreadyRegistered`] if `token` is already known.
+    pub fn register(&self, token: &str, credentials: Credentials230) -> Result<(), ServerError> {
+        self.register_with_endpoints(token, credentials, None)
+    }
+
+    /// Register a new party under `token`, storing their [`Credentials230`] and
+    /// the endpoint catalogue fetched during the handshake.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::AlreadyRegistered`] if `token` is already known.
+    pub fn register_with_endpoints(
+        &self,
+        token: &str,
+        credentials: Credentials230,
+        endpoints: Option<Vec<Endpoint>>,
+    ) -> Result<(), ServerError> {
+        let mut map = self.registered.write().expect("lock not poisoned");
+        if map.contains_key(token) {
+            return Err(ServerError::AlreadyRegistered);
+        }
+        map.insert(
+            token.to_owned(),
+            Registered230Party {
+                credentials,
+                endpoints,
+            },
+        );
+        Ok(())
+    }
+
+    /// Update the stored credentials for an already-registered party, clearing
+    /// any stored endpoint catalogue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotRegistered`] if `token` is not in the registry.
+    pub fn update(&self, token: &str, credentials: Credentials230) -> Result<(), ServerError> {
+        self.update_with_endpoints(token, credentials, None)
+    }
+
+    /// Update the stored credentials and endpoint catalogue for an
+    /// already-registered party.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::NotRegistered`] if `token` is not in the registry.
+    pub fn update_with_endpoints(
+        &self,
+        token: &str,
+        credentials: Credentials230,
+        endpoints: Option<Vec<Endpoint>>,
+    ) -> Result<(), ServerError> {
+        let mut map = self.registered.write().expect("lock not poisoned");
+        if !map.contains_key(token) {
+            return Err(ServerError::NotRegistered);
+        }
+        map.insert(
+            token.to_owned(),
+            Registered230Party {
+                credentials,
+                endpoints,
+            },
+        );
+        Ok(())
+    }
+
+    /// Return the endpoint catalogue stored for a registered party, if any.
+    #[must_use]
+    pub fn get_endpoints(&self, token: &str) -> Option<Vec<Endpoint>> {
+        self.registered
+            .read()
+            .expect("lock not poisoned")
+            .get(token)
+            .and_then(|party| party.endpoints.clone())
+    }
+
+    /// Run the registration fetch-back for a registering 2.3.0 party.
+    ///
+    /// Returns `Ok(None)` when no [`VersionFetcher`] is configured. Otherwise it
+    /// `GET`s the party's `/versions`, selects the highest mutually-supported
+    /// version, fetches that version's endpoint catalogue, and returns it. The
+    /// presented [`Credentials230::token`] authenticates the outbound calls;
+    /// [`Credentials230::url`] is the party's `/versions` URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FetchError`] on any transport, negotiation, or parse failure;
+    /// callers map this to OCPI status code `3001`.
+    pub async fn fetch_back(
+        &self,
+        credentials: &Credentials230,
+    ) -> Result<Option<Vec<Endpoint>>, FetchError> {
+        let Some(fetcher) = self.fetcher.as_ref() else {
+            return Ok(None);
+        };
+        let url = credentials.url.as_str();
+        let token = credentials.token.as_str();
+        let remote = fetcher.fetch_versions(url, token).await?;
+        let chosen = select_best_version(&remote, &self.supported_versions)
+            .ok_or(FetchError::NoMutualVersion)?;
+        let details = fetcher
+            .fetch_version_details(chosen.url.as_str(), token)
+            .await?;
+        Ok(Some(details.endpoints))
+    }
+
+    /// Invalidate `token`, removing it from the registry if present (used to
+    /// burn the single-use bootstrap *Token A*). Returns `true` if present.
     pub fn invalidate(&self, token: &str) -> bool {
         self.registered
             .write()
@@ -6511,10 +6738,11 @@ pub mod http {
         token_type_2_1_1_str, token_type_str, Cdrs2111Config, Cdrs22Config, Cdrs230Config,
         CdrsConfig, ChargingProfilesConfig, ChargingProfilesHandler, Commands2111Config,
         Commands2111Handler, Commands22Config, Commands22Handler, CommandsConfig, CommandsHandler,
-        Credentials2111Config, CredentialsConfig, HubClientInfoConfig, Locations2111Config,
-        Locations22Config, Locations230Config, LocationsConfig, Payments230Config, ServerError,
-        Sessions2111Config, Sessions230Config, SessionsConfig, Tariffs2111Config, Tariffs230Config,
-        TariffsConfig, Tokens2111Config, TokensConfig, VersionsConfig,
+        Credentials2111Config, Credentials230Config, CredentialsConfig, HubClientInfoConfig,
+        Locations2111Config, Locations22Config, Locations230Config, LocationsConfig,
+        Payments230Config, ServerError, Sessions2111Config, Sessions230Config, SessionsConfig,
+        Tariffs2111Config, Tariffs230Config, TariffsConfig, Tokens2111Config, TokensConfig,
+        VersionsConfig,
     };
     // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
     use ocpi_types::v2_1_1::Credentials as Credentials2111;
@@ -6564,6 +6792,9 @@ pub mod http {
     // `locations_2_3_0_sender_router` — the `v2_3_0` forks carrying the additive
     // 2.3.0 fields (aliased to avoid clashing with the 2.2.1 imports above).
     use ocpi_types::v2_3_0::{Connector as Connector230, Evse as Evse230, Location as Location230};
+    // The OCPI 2.3.0 Credentials object (the `hub_party_id` fork) served by
+    // `credentials_2_3_0_router`.
+    use ocpi_types::v2_3_0::Credentials as Credentials230;
 
     // ── Versions ──────────────────────────────────────────────────────────────
 
@@ -6944,6 +7175,169 @@ pub mod http {
                 credentials_2_1_1_method_not_allowed("not registered")
             }
             Err(_) => credentials_2_1_1_server_error(),
+        }
+    }
+
+    // ── Credentials (OCPI 2.3.0, hub_party_id fork) ─────────────────────────────
+
+    /// Build an axum router for the **OCPI 2.3.0** Credentials module.
+    ///
+    /// Exposes `GET/POST/PUT/DELETE /credentials` over the [`Credentials230`]
+    /// fork (the `hub_party_id` addition, #179), running the *same* Token A→B→C
+    /// registration semantics as [`credentials_router`] — the registry is keyed
+    /// by the issued *Token C* (`own_credentials.token`), the bootstrap *Token A*
+    /// is burned on a successful `POST`, and the spec-mandated fetch-back runs
+    /// over the shared role-bearing [`VersionFetcher`](crate::VersionFetcher) (2.3.0 reuses the 2.2.1
+    /// Versions layer). Only the (de)serialize target differs, so a Hub
+    /// partner's `hub_party_id` survives the exchange instead of being dropped
+    /// through the 2.2.1 shape.
+    pub fn credentials_2_3_0_router(config: Arc<Credentials230Config>) -> Router {
+        Router::new()
+            .route(
+                "/credentials",
+                get(credentials_2_3_0_get)
+                    .post(credentials_2_3_0_post)
+                    .put(credentials_2_3_0_put)
+                    .delete(credentials_2_3_0_delete),
+            )
+            .with_state(config)
+    }
+
+    fn credentials_2_3_0_unauthorized() -> Response {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(OcpiResponse::<Credentials230>::error(
+                OcpiStatusCode::ClientError,
+                "unauthorized",
+            )),
+        )
+            .into_response()
+    }
+
+    fn credentials_2_3_0_method_not_allowed(msg: &'static str) -> Response {
+        (
+            StatusCode::METHOD_NOT_ALLOWED,
+            Json(OcpiResponse::<Credentials230>::error(
+                OcpiStatusCode::ClientError,
+                msg,
+            )),
+        )
+            .into_response()
+    }
+
+    fn credentials_2_3_0_server_error() -> Response {
+        Json(OcpiResponse::<Credentials230>::error(
+            OcpiStatusCode::ServerError,
+            "internal server error",
+        ))
+        .into_response()
+    }
+
+    /// `3001` — the server could not use the registering party's API during the
+    /// 2.3.0 fetch-back (could not retrieve its `/versions` or version details).
+    fn credentials_2_3_0_unable_to_use_client() -> Response {
+        Json(OcpiResponse::<Credentials230>::error(
+            OcpiStatusCode::UnableToUseClientApi,
+            "unable to use the client's API",
+        ))
+        .into_response()
+    }
+
+    async fn credentials_2_3_0_get(
+        State(cfg): State<Arc<Credentials230Config>>,
+        headers: HeaderMap,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_3_0_unauthorized(),
+        };
+        if !cfg.is_registered(token.as_str()) {
+            return credentials_2_3_0_unauthorized();
+        }
+        Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response()
+    }
+
+    async fn credentials_2_3_0_post(
+        State(cfg): State<Arc<Credentials230Config>>,
+        headers: HeaderMap,
+        Json(body): Json<Credentials230>,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_3_0_unauthorized(),
+        };
+        // Keyed by the issued Token C (`own_credentials.token`): the Sender
+        // switches to Token C for every subsequent request, so that — not the
+        // bootstrap Token A bearer — must authenticate afterwards. Reject
+        // re-registration (the Sender should PUT to rotate) before the fetch-back.
+        if cfg.is_registered(cfg.own_credentials.token.as_str()) {
+            return credentials_2_3_0_method_not_allowed("already registered");
+        }
+        // §POST: the receiver fetches the sender's endpoints for the registered
+        // version, authenticating with the sender's Token B (`body.token`). Any
+        // failure → status code 3001.
+        let endpoints = match cfg.fetch_back(&body).await {
+            Ok(endpoints) => endpoints,
+            Err(_) => return credentials_2_3_0_unable_to_use_client(),
+        };
+        match cfg.register_with_endpoints(cfg.own_credentials.token.as_str(), body, endpoints) {
+            Ok(()) => {
+                // Burn the single-use bootstrap Token A once the Sender holds
+                // Token C. Guard against a misconfiguration where Token C equals
+                // the bearer, which would otherwise undo the registration.
+                if token.as_str() != cfg.own_credentials.token.as_str() {
+                    cfg.invalidate(token.as_str());
+                }
+                Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response()
+            }
+            Err(ServerError::AlreadyRegistered) => {
+                credentials_2_3_0_method_not_allowed("already registered")
+            }
+            Err(_) => credentials_2_3_0_server_error(),
+        }
+    }
+
+    async fn credentials_2_3_0_put(
+        State(cfg): State<Arc<Credentials230Config>>,
+        headers: HeaderMap,
+        Json(body): Json<Credentials230>,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_3_0_unauthorized(),
+        };
+        // The caller authenticates with the registered Token C.
+        if !cfg.is_registered(token.as_str()) {
+            return credentials_2_3_0_method_not_allowed("not registered");
+        }
+        // §PUT: re-fetch the sender's endpoints on credential update.
+        let endpoints = match cfg.fetch_back(&body).await {
+            Ok(endpoints) => endpoints,
+            Err(_) => return credentials_2_3_0_unable_to_use_client(),
+        };
+        match cfg.update_with_endpoints(cfg.own_credentials.token.as_str(), body, endpoints) {
+            Ok(()) => Json(OcpiResponse::success(cfg.own_credentials.clone())).into_response(),
+            Err(ServerError::NotRegistered) => {
+                credentials_2_3_0_method_not_allowed("not registered")
+            }
+            Err(_) => credentials_2_3_0_server_error(),
+        }
+    }
+
+    async fn credentials_2_3_0_delete(
+        State(cfg): State<Arc<Credentials230Config>>,
+        headers: HeaderMap,
+    ) -> Response {
+        let token = match extract_token(&headers) {
+            Some(t) => t,
+            None => return credentials_2_3_0_unauthorized(),
+        };
+        match cfg.delete(token.as_str()) {
+            Ok(()) => Json(OcpiResponse::<Credentials230>::success_empty()).into_response(),
+            Err(ServerError::NotRegistered) => {
+                credentials_2_3_0_method_not_allowed("not registered")
+            }
+            Err(_) => credentials_2_3_0_server_error(),
         }
     }
 
