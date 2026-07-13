@@ -97,6 +97,11 @@ use ocpi_types::v2_3_0::Session as Session230;
 // deserialize a 2.3.0 partner's catalogue into these so those new fields reach
 // the caller instead of being silently dropped by the 2.2.1 struct.
 use ocpi_types::v2_3_0::{Connector as Connector230, Evse as Evse230, Location as Location230};
+// The OCPI 2.3.0 Credentials object (the `hub_party_id` fork of the 2.2.1
+// shape, #179), aliased to keep it distinct from the role-bearing 2.2.1
+// `Credentials` imported above. Carried by the `_2_3_0` registration methods so
+// a Hub's `hub_party_id` survives the Token A→B→C exchange.
+use ocpi_types::v2_3_0::Credentials as Credentials230;
 // The OCPI 2.3.0 CDR object transported by the `*_cdr*_2_3_0` methods — the
 // 2.2.1 shape with all six cost fields (`total_cost` + the five optional
 // `total_*_cost`s) reworked onto the tax-itemised 2.3.0 `Price` (an itemised
@@ -600,6 +605,98 @@ impl OcpiClient {
             .await?
             .error_for_status()?;
         let envelope: OcpiResponse<Credentials2111> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    // ── Credentials (OCPI 2.3.0, hub_party_id fork) ─────────────────────────────
+    //
+    // The 2.3.0 registration handshake is byte-for-byte the 2.2.1 one except the
+    // credentials object is the [`Credentials230`] fork (the `hub_party_id`
+    // addition, #179). The registration paths are version-invariant
+    // (`GET/POST/PUT credentials`), so — exactly as the 2.1.1 slice did — only
+    // the (de)serialize target changes; the Token A→B→C semantics are identical.
+    // `DELETE /credentials` carries no body, so the version-agnostic
+    // [`delete_credentials`](Self::delete_credentials) is reused for 2.3.0.
+    //
+    // Spec: `specs/ocpi/2.3.0/credentials.asciidoc` — Credentials / Registration.
+
+    /// Retrieve the remote 2.3.0 party's own credentials (`GET <url>`).
+    ///
+    /// `url` is the absolute URL of the remote credentials endpoint, obtained
+    /// from `VersionDetails.endpoints` after version negotiation. A Hub
+    /// partner's `hub_party_id` is preserved in the returned [`Credentials230`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// envelope carries no data.
+    pub async fn get_credentials_2_3_0(&self, url: &str) -> Result<Credentials230, ClientError> {
+        let parsed = url::Url::parse(url)?;
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<Credentials230> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Register with a 2.3.0 remote party by `POST`-ing `credentials` to `url`.
+    ///
+    /// On success the remote returns a new [`Credentials230`] object carrying
+    /// the token (Token C) the client must use for subsequent requests. When
+    /// this party is a Hub, `credentials.hub_party_id` travels on the wire so
+    /// the partner learns which party routes hub-directed traffic.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, the
+    /// HTTP response is 405 (already registered), or the envelope carries no
+    /// data.
+    pub async fn register_2_3_0(
+        &self,
+        url: &str,
+        credentials: &Credentials230,
+    ) -> Result<Credentials230, ClientError> {
+        let parsed = url::Url::parse(url)?;
+        let response = self
+            .http
+            .post(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(credentials)
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<Credentials230> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Rotate the 2.3.0 registration with the remote party (`PUT <url>`).
+    ///
+    /// On success the remote returns updated [`Credentials230`] for the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, the
+    /// HTTP response is 405 (not yet registered), or the envelope carries no
+    /// data.
+    pub async fn update_credentials_2_3_0(
+        &self,
+        url: &str,
+        credentials: &Credentials230,
+    ) -> Result<Credentials230, ClientError> {
+        let parsed = url::Url::parse(url)?;
+        let response = self
+            .http
+            .put(parsed)
+            .header("Authorization", self.auth_header_value())
+            .json(credentials)
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<Credentials230> = response.json().await?;
         envelope.data.ok_or(ClientError::EmptyData)
     }
 
