@@ -86,6 +86,13 @@ use ocpi_types::v2_3_0::{FinancialAdviceConfirmation, Terminal};
 // (an itemised `TaxAmount` list for North-American GST/QST). Every other field
 // is wire-identical to 2.2.1. See `crate::OcpiClient::get_sessions_2_3_0`.
 use ocpi_types::v2_3_0::Session as Session230;
+// The OCPI 2.3.0 Locations composites: structurally the 2.2.1 shapes plus the
+// additive 2.3.0 fields — `Connector.capabilities` (ISO 15118 Plug-and-Charge),
+// `Evse.{parking, accepted_service_providers}`, and `Location.{parking_places,
+// help_phone}`. The sender getters below (`get_locations_2_3_0` and friends)
+// deserialize a 2.3.0 partner's catalogue into these so those new fields reach
+// the caller instead of being silently dropped by the 2.2.1 struct.
+use ocpi_types::v2_3_0::{Connector as Connector230, Evse as Evse230, Location as Location230};
 use url::Url;
 
 fn token_type_str(t: TokenType) -> &'static str {
@@ -1440,6 +1447,176 @@ impl OcpiClient {
         }
         let response = response.error_for_status()?;
         let envelope: OcpiResponse<Connector22> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    // ── Locations (2.3.0) ─────────────────────────────────────────────────────────
+
+    /// Fetch a paginated list of **OCPI 2.3.0** Locations from a CPO's Sender
+    /// interface (`GET {url}`).
+    ///
+    /// Mirrors [`OcpiClient::get_locations_2_2`] but deserializes the *2.3.0*
+    /// composite ([`ocpi_types::v2_3_0::Location`]): structurally the 2.2.1 shape
+    /// plus the additive 2.3.0 fields — `Location.{parking_places, help_phone}`,
+    /// `Evse.{parking, accepted_service_providers}`, and the ISO 15118
+    /// `Connector.capabilities`. The Sender path is identical to 2.2.1; only the
+    /// object shape differs, so a 2.3.0 partner's parking/15118/AFIR data reaches
+    /// the caller instead of being dropped by the 2.2.1 struct.
+    ///
+    /// `url` is the absolute URL of the CPO's 2.3.0 Locations sender endpoint;
+    /// `params` carries `date_from`, `date_to`, `offset`, and `limit`. Use
+    /// [`PaginationMeta::next_url`] to retrieve subsequent pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, the
+    /// envelope carries no data, or the payload carries an unknown enum value
+    /// (e.g. an undocumented `VehicleType`/`ConnectorCapability`), which is
+    /// rejected on deserialize rather than silently coerced.
+    ///
+    /// See `specs/ocpi/2.3.0/mod_locations.asciidoc` — Sender Interface, GET List.
+    pub async fn get_locations_2_3_0(
+        &self,
+        url: &str,
+        params: PaginatedParams,
+    ) -> Result<(Vec<Location230>, PaginationMeta), ClientError> {
+        let mut parsed = url::Url::parse(url)?;
+        if let Some(date_from) = params.date_from {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_from", &date_from.to_rfc3339());
+        }
+        if let Some(date_to) = params.date_to {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_to", &date_to.to_rfc3339());
+        }
+        if let Some(offset) = params.offset {
+            parsed
+                .query_pairs_mut()
+                .append_pair("offset", &offset.to_string());
+        }
+        if let Some(limit) = params.limit {
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?
+            .error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<Location230>> = response.json().await?;
+        let locations = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((locations, meta))
+    }
+
+    /// Fetch a single **OCPI 2.3.0** Location by id from a CPO's Sender interface
+    /// (`GET {url}/{location_id}`).
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_location_2_3_0(
+        &self,
+        url: &str,
+        location_id: &str,
+    ) -> Result<Location230, ClientError> {
+        let endpoint = join_segments(url, &[location_id]);
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Location230> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Fetch a single **OCPI 2.3.0** EVSE from a CPO's Sender interface
+    /// (`GET {url}/{location_id}/{evse_uid}`).
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_evse_2_3_0(
+        &self,
+        url: &str,
+        location_id: &str,
+        evse_uid: &str,
+    ) -> Result<Evse230, ClientError> {
+        let endpoint = join_segments(url, &[location_id, evse_uid]);
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Evse230> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Fetch a single **OCPI 2.3.0** Connector from a CPO's Sender interface
+    /// (`GET {url}/{location_id}/{evse_uid}/{connector_id}`).
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_connector_2_3_0(
+        &self,
+        url: &str,
+        location_id: &str,
+        evse_uid: &str,
+        connector_id: &str,
+    ) -> Result<Connector230, ClientError> {
+        let endpoint = join_segments(url, &[location_id, evse_uid, connector_id]);
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Connector230> = response.json().await?;
         envelope.data.ok_or(ClientError::EmptyData)
     }
 
@@ -3419,6 +3596,155 @@ impl OcpiClient {
         let response = response.error_for_status()?;
         let envelope: OcpiResponse<Terminal> = response.json().await?;
         envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Activate a **OCPI 2.3.0** payment [`Terminal`] on a PTP's Sender interface
+    /// (`POST {url}/activate`).
+    ///
+    /// A CPO calls this to hand the PTP the mapping data (a serial number via
+    /// `reference`, plus `location_ids`/`evse_uids`) needed to link a
+    /// station-integrated payment terminal. Per the spec the `terminal_id` is
+    /// optional in the activation body — the **PTP** assigns it — so the
+    /// [`Terminal`] passed here may carry a placeholder id the PTP will replace.
+    ///
+    /// Activation makes the PTP create the `Terminal` asynchronously (it then
+    /// calls the CPO Receiver's `POST payments/terminals`), so the response is an
+    /// acknowledgement whose `data` may or may not carry the created terminal;
+    /// the parsed [`Terminal`] is returned when present, `None` otherwise.
+    ///
+    /// Payments is a functional module, so the OCPI routing headers are attached
+    /// when configured, the same as every other functional-module sender.
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `POST payments/terminals/activate`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn activate_terminal_2_3_0(
+        &self,
+        url: &str,
+        terminal: &Terminal,
+    ) -> Result<Option<Terminal>, ClientError> {
+        let endpoint = format!("{}/activate", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .post(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .json(terminal)
+            .send()
+            .await?
+            .error_for_status()?;
+        let envelope: OcpiResponse<Terminal> = response.json().await?;
+        Ok(envelope.data)
+    }
+
+    /// Deactivate a **OCPI 2.3.0** payment [`Terminal`] on a PTP's Sender
+    /// interface (`POST {url}/{terminal_id}/deactivate`).
+    ///
+    /// Used when a terminal is broken or its address changes. The PTP
+    /// acknowledges with a status envelope carrying no object payload.
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `POST payments/terminals/{terminal_id}/deactivate`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn deactivate_terminal_2_3_0(
+        &self,
+        url: &str,
+        terminal_id: &str,
+    ) -> Result<(), ClientError> {
+        let endpoint = format!("{}/{terminal_id}/deactivate", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .post(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        response.error_for_status()?;
+        Ok(())
+    }
+
+    /// Update the location data of a **OCPI 2.3.0** payment [`Terminal`] on a
+    /// PTP's Sender interface (`PUT {url}/{terminal_id}`).
+    ///
+    /// A full replace of the terminal object (e.g. setting `customer_reference`
+    /// and `invoice_base_url`). This is an information-push message; the PTP
+    /// acknowledges with a status envelope.
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `PUT payments/terminals/{terminal_id}`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn put_terminal_2_3_0(
+        &self,
+        url: &str,
+        terminal_id: &str,
+        terminal: &Terminal,
+    ) -> Result<(), ClientError> {
+        let endpoint = format!("{}/{terminal_id}", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .put(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .json(terminal)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        response.error_for_status()?;
+        Ok(())
+    }
+
+    /// Assign `location_ids` and/or `evse_uids` to a **OCPI 2.3.0** payment
+    /// [`Terminal`] on a PTP's Sender interface (`PATCH {url}/{terminal_id}`).
+    ///
+    /// `partial` is any `Serialize` value; use a struct with
+    /// `#[serde(skip_serializing_if = "Option::is_none")]` fields, or a
+    /// `serde_json::Value` map, to send only the changed fields (per the spec
+    /// this PATCH assigns the terminal's Location/EVSE mapping). When both
+    /// `location_ids` and `evse_uids` are sent, the sum of EVSEs is enabled.
+    ///
+    /// Spec: `specs/ocpi/2.3.0/mod_payments.asciidoc` — §82 PTP (Sender)
+    /// interface, `PATCH payments/terminals/{terminal_id}`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError`] if the request fails or the URL is invalid.
+    pub async fn patch_terminal_2_3_0<T: ocpi_types::serde::Serialize>(
+        &self,
+        url: &str,
+        terminal_id: &str,
+        partial: &T,
+    ) -> Result<(), ClientError> {
+        let endpoint = format!("{}/{terminal_id}", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .patch(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .json(partial)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        response.error_for_status()?;
+        Ok(())
     }
 
     /// Fetch a paginated list of **OCPI 2.3.0** [`FinancialAdviceConfirmation`]s
