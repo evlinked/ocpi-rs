@@ -78,16 +78,16 @@ Legend: ☐ planned · ◑ in progress · ☑ done
 
 | Module | 2.1.1 | 2.2 | 2.2.1 | 2.3.0 |
 |---|:--:|:--:|:--:|:--:|
-| Versions | ☑ | ☑ | ☑ | ☐ |
+| Versions | ☑ | ☑ | ☑ | ☑ |
 | Credentials | ☑ | ☑ | ☑ | ◑ |
 | Locations | ☑ | ☑ | ☑ | ◑ |
 | Sessions | ☑ | ☑ | ☑ | ◑ |
 | CDRs | ☑ | ☑ | ☑ | ◑ |
 | Tariffs | ☑ | ☑ | ☑ | ☑ |
-| Tokens | ☑ | ☑ | ☑ | ☐ |
-| Commands | ☑ | ☑ | ☑ | ☐ |
-| ChargingProfiles | — | ☑ | ☑ | ☐ |
-| HubClientInfo | — | ☑ | ☑ | ☐ |
+| Tokens | ☑ | ☑ | ☑ | ☑ |
+| Commands | ☑ | ☑ | ☑ | ☑ |
+| ChargingProfiles | — | ☑ | ☑ | ☑ |
+| HubClientInfo | — | ☑ | ☑ | ☑ |
 | Payments | — | — | — | ☑ |
 
 ☑ = types + client sender methods + server receiver handler/router shipped for 2.2.1. The ChargingProfiles **Sender** interface — the CPO-pushes-`ActiveChargingProfile` PUT ([#75](https://github.com/evlinked/ocpi-rs/issues/75)) — is now complete via `charging_profiles_sender_router` + `OcpiClient::put_active_charging_profile`.
@@ -105,6 +105,8 @@ The first **Locations** delta now lands (slice 1 of [#177](https://github.com/ev
 The **Payments** transport now begins landing (slice of [#185](https://github.com/evlinked/ocpi-rs/issues/185), the wiring follow-up to the `v2_3_0::payments` types). The PTP-**Sender** client getters land first: `OcpiClient::{get_terminals, get_terminal, get_financial_advice_confirmations, get_financial_advice_confirmation}_2_3_0` fetch a PTP's `Terminal` catalogue and its `FinancialAdviceConfirmation`s over `v2_3_0::payments` — the two list endpoints paginated over the shared `X-Total-Count`/`X-Limit`/`Link` plumbing, all four carrying the OCPI routing headers a functional module requires. This is the read side a hub uses to map a card tap to a charge point (via a terminal's `location_ids`/`evse_uids`) and to pull the financial-advice confirmations that correlate a captured payment to its Session/CDR. The CPO-**Receiver** router (the write side a CPO exposes) and the PTP-sender *mutating* calls (`activate_terminal_2_3_0` — with its `terminal_id`-less activation body variant — `deactivate_terminal_2_3_0`, `put_terminal_2_3_0`, `patch_terminal_2_3_0`) now land too, so the full §82 PTP Sender interface is present alongside the receiver and the **2.3.0 / Payments** matrix cell is **☑** ([#185](https://github.com/evlinked/ocpi-rs/issues/185)).
 
 The **Tariffs** transport now lands end-to-end for 2.3.0, completing the module ([#178](https://github.com/evlinked/ocpi-rs/issues/178)). On top of the North-American tax fork of `v2_3_0::Tariff` (the required `tax_included` flag, tax-aware `PriceLimit` `min_price`/`max_price`, and `preauthorize_amount`), the client sender methods (`OcpiClient::{get_tariffs, get_tariff, put_tariff, delete_tariff}_2_3_0`) and the server receiver `tariffs_2_3_0_router` + `Tariffs230Config` / `Tariffs230Handler` now transport a 2.3.0 tariff over HTTP. The transport paths are identical to 2.2.1 (Sender flat `GET /tariffs`, paginated with `X-Total-Count`/`X-Limit`/`Link`; Receiver `{country_code}/{party_id}/{tariff_id}` GET/PUT/DELETE) — only the object shape differs, so a Canadian GST+QST tariff pushed through the receiver is stored and re-served with its `tax_included` stance intact instead of coerced through the VAT-only 2.2.1 shape, and a `PUT` body missing the required `tax_included` is rejected on deserialize before it reaches the store. With types + client sender + server receiver all shipped, the **2.3.0 / Tariffs** matrix cell moves **◑→☑**.
+
+The **five wire-identical reuse modules** now close out the reuse half of the 2.3.0 column ([#205](https://github.com/evlinked/ocpi-rs/issues/205)) — the direct M8 mirror of the 2.2-column close-out ([#171](https://github.com/evlinked/ocpi-rs/issues/171)). The 2.3.0 changelog's entire delta set (Payments, the Locations Parking/15118/`accepted_emsps` additions, the North-American tax rework on Tariffs/CDRs/Sessions, the Credentials `hub_party_id`, and the "make OCPI extensible" serde policy) touches **none** of **Versions, Tokens, Commands, ChargingProfiles, HubClientInfo** — in 2.3.0 those five modules are byte-for-byte the 2.2.1 modules. So, exactly as `v2_2` does for the seven wire-identical 2.2 modules, `v2_3_0` **reuses** them rather than minting `_2_3_0` client/server methods (aliasing identical-typed calls would only imply a difference that does not exist): a 2.3.0 party drives all five over the existing unqualified 2.2.1 surface unchanged. That reuse is *ratified*, not merely asserted — the `reuse_types_stay_aliases_of_2_2_1` compile-time identity assertions in `crates/ocpi-types/src/v2_3_0/mod.rs` (now extended with a `Versions`-layer `Endpoint`/`VersionDetails` line) fail CI the moment one silently forks; `v2_3_0::Token` and `v2_3_0::ChargingProfile` type-level round-trips prove the bytes agree with 2.2.1; and a transport-level end-to-end test drives a `v2_3_0::Token` through the unqualified 2.2.1 client + `tokens_router` (`PUT`→`GET` list→`authorize`, `crates/ocpi-client/tests/m8_tokens_reuse_2_3_0.rs`). Nothing loosens — every strict-enum / `CiString`-length rejection the 2.2.1 modules enforce still applies verbatim on the 2.3.0 path. With the five reuse cells verified, the **2.3.0** cells for **Versions, Tokens, Commands, ChargingProfiles, HubClientInfo** move **☐→☑**; the remaining ◑ cells (Credentials, Locations, Sessions, CDRs) are gated only on the in-flight delta transport.
 
 ## How this repo is built
 
