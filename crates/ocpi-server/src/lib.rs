@@ -6738,10 +6738,11 @@ pub mod http {
         token_type_2_1_1_str, token_type_str, Cdrs2111Config, Cdrs22Config, Cdrs230Config,
         CdrsConfig, ChargingProfilesConfig, ChargingProfilesHandler, Commands2111Config,
         Commands2111Handler, Commands22Config, Commands22Handler, CommandsConfig, CommandsHandler,
-        Credentials2111Config, Credentials230Config, CredentialsConfig, HubClientInfoConfig, Locations2111Config,
-        Locations22Config, Locations230Config, LocationsConfig, Payments230Config, ServerError,
-        Sessions2111Config, Sessions230Config, SessionsConfig, Tariffs2111Config, Tariffs230Config,
-        TariffsConfig, Tokens2111Config, TokensConfig, VersionsConfig,
+        Credentials2111Config, Credentials230Config, CredentialsConfig, HubClientInfoConfig,
+        Locations2111Config, Locations22Config, Locations230Config, LocationsConfig,
+        Payments230Config, ServerError, Sessions2111Config, Sessions230Config, SessionsConfig,
+        Tariffs2111Config, Tariffs230Config, TariffsConfig, Tokens2111Config, TokensConfig,
+        VersionsConfig,
     };
     // The flat OCPI 2.1.1 credentials object served by `credentials_2_1_1_router`.
     use ocpi_types::v2_1_1::Credentials as Credentials2111;
