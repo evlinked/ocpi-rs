@@ -89,6 +89,7 @@ use ocpi_types::v2_3_0::{FinancialAdviceConfirmation, Terminal};
 // the 2.2.1 shape with `total_cost` reworked onto the tax-itemised 2.3.0 `Price`
 // (an itemised `TaxAmount` list for North-American GST/QST). Every other field
 // is wire-identical to 2.2.1. See `crate::OcpiClient::get_sessions_2_3_0`.
+use ocpi_types::v2_3_0::Cdr as Cdr230;
 use ocpi_types::v2_3_0::Session as Session230;
 // The OCPI 2.3.0 Locations composites: structurally the 2.2.1 shapes plus the
 // additive 2.3.0 fields — `Connector.capabilities` (ISO 15118 Plug-and-Charge),
@@ -4040,6 +4041,151 @@ impl OcpiClient {
         }
         response.error_for_status()?;
         Ok(())
+    }
+
+    // ── CDRs (2.3.0) ──────────────────────────────────────────────────────────
+
+    /// Fetch a paginated list of **OCPI 2.3.0** CDRs from a CPO's Sender
+    /// interface (`GET {url}`).
+    ///
+    /// Mirrors [`OcpiClient::get_cdrs`] but deserializes the *2.3.0* wire shape
+    /// ([`ocpi_types::v2_3_0::Cdr`]: every cost field reworked onto the
+    /// tax-itemised 2.3.0 `Price`, so a North-American CDR's itemised GST+QST
+    /// breakdown survives the hop instead of collapsing into the VAT-only 2.2.1
+    /// field). A CDR is a server-owned object, so the path is flat — identical
+    /// to 2.2.1; only the payload type differs.
+    ///
+    /// `url` is the absolute URL of the CPO's 2.3.0 CDRs sender endpoint;
+    /// `params` carries `date_from`, `date_to`, `offset`, and `limit`. Use
+    /// [`PaginationMeta::next_url`] to retrieve subsequent pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// envelope carries no data.
+    ///
+    /// See `specs/ocpi/2.3.0/mod_cdrs.asciidoc` — *CDRs*, Sender Interface, GET List.
+    pub async fn get_cdrs_2_3_0(
+        &self,
+        url: &str,
+        params: PaginatedParams,
+    ) -> Result<(Vec<Cdr230>, PaginationMeta), ClientError> {
+        let mut parsed = url::Url::parse(url)?;
+        if let Some(date_from) = params.date_from {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_from", &date_from.to_rfc3339());
+        }
+        if let Some(date_to) = params.date_to {
+            parsed
+                .query_pairs_mut()
+                .append_pair("date_to", &date_to.to_rfc3339());
+        }
+        if let Some(offset) = params.offset {
+            parsed
+                .query_pairs_mut()
+                .append_pair("offset", &offset.to_string());
+        }
+        if let Some(limit) = params.limit {
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .send()
+            .await?
+            .error_for_status()?;
+        let hdrs = response.headers();
+        let link = hdrs
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let total_count = hdrs
+            .get("x-total-count")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let limit_hdr = hdrs
+            .get("x-limit")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let meta = PaginationMeta::from_headers(
+            link.as_deref(),
+            total_count.as_deref(),
+            limit_hdr.as_deref(),
+        )
+        .unwrap_or(PaginationMeta {
+            next_url: None,
+            total_count: 0,
+            limit: 50,
+        });
+        let envelope: OcpiResponse<Vec<Cdr230>> = response.json().await?;
+        let cdrs = envelope.data.ok_or(ClientError::EmptyData)?;
+        Ok((cdrs, meta))
+    }
+
+    /// Fetch a single **OCPI 2.3.0** CDR by its ID from an eMSP's Receiver
+    /// interface (`GET {url}/{cdr_id}`).
+    ///
+    /// Per the 2.3.0 CDRs module a CDR is a server-owned object addressed by the
+    /// `Location` header returned from `POST /cdrs`; the path is flat, identical
+    /// to 2.2.1's [`OcpiClient::get_cdr`]. Only the payload is the 2.3.0
+    /// [`ocpi_types::v2_3_0::Cdr`] shape.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::NotFound`] when the remote responds with HTTP 404.
+    /// - [`ClientError::EmptyData`] if the success envelope carries no data.
+    pub async fn get_cdr_2_3_0(&self, url: &str, cdr_id: &str) -> Result<Cdr230, ClientError> {
+        let endpoint = format!("{}/{cdr_id}", url.trim_end_matches('/'));
+        let response = self
+            .http
+            .get(url::Url::parse(&endpoint)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(ClientError::NotFound);
+        }
+        let response = response.error_for_status()?;
+        let envelope: OcpiResponse<Cdr230> = response.json().await?;
+        envelope.data.ok_or(ClientError::EmptyData)
+    }
+
+    /// Push a new **OCPI 2.3.0** CDR to an eMSP's Receiver interface
+    /// (`POST {url}`).
+    ///
+    /// On success the eMSP responds with `201 Created` and a `Location` header
+    /// pointing to the stored CDR. This method returns that URL string. Mirrors
+    /// [`OcpiClient::post_cdr`]; only the payload is the 2.3.0
+    /// [`ocpi_types::v2_3_0::Cdr`] shape, so the itemised tax on `total_cost`
+    /// crosses the roaming boundary intact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails, the URL is invalid, or the
+    /// `Location` header is absent/unparseable.
+    pub async fn post_cdr_2_3_0(&self, url: &str, cdr: &Cdr230) -> Result<String, ClientError> {
+        let response = self
+            .http
+            .post(url::Url::parse(url)?)
+            .header("Authorization", self.auth_header_value())
+            .ocpi_routing(&self.routing)
+            .json(cdr)
+            .send()
+            .await?
+            .error_for_status()?;
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned())
+            .ok_or(ClientError::EmptyData)?;
+        Ok(location)
     }
     // ── Tariffs (OCPI 2.3.0) ────────────────────────────────────────────────
 
