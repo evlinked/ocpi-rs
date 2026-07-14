@@ -1,0 +1,13 @@
+#![no_main]
+//! Fuzz the 2.2.1 `Tariff` deserialize boundary (nested price components,
+//! restrictions, floats).
+//!
+//! Invariant: never panics — `Ok(_)` or a clean `Err(_)` only. See
+//! `fuzz/README.md`.
+
+use libfuzzer_sys::fuzz_target;
+use ocpi_types::Tariff;
+
+fuzz_target!(|data: &[u8]| {
+    let _ = serde_json::from_slice::<Tariff>(data);
+});

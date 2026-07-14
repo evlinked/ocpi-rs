@@ -1,0 +1,80 @@
+[package]
+name = "ocpi-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+rust-version = "1.86"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# libFuzzer runtime — a dev-only, nightly-only dependency of this excluded
+# member. It is NOT a dependency of any shipping crate (ocpi-types /
+# ocpi-client / ocpi-server / ocpi-cli), so the crate's "no new runtime deps"
+# and `#![forbid(unsafe_code)]` guarantees are unaffected.
+libfuzzer-sys = "0.4"
+serde_json = "1.0"
+
+[dependencies.ocpi-types]
+path = "../crates/ocpi-types"
+
+# Prevent this member from being folded into the parent workspace's build; it
+# is its own single-crate workspace built only via `cargo +nightly fuzz`.
+[workspace]
+
+[profile.release]
+debug = 1
+
+# One binary per deserialize entry point. `test`/`doc`/`bench` are disabled so
+# these libFuzzer harnesses never enter a `cargo test` graph.
+
+[[bin]]
+name = "envelope"
+path = "fuzz_targets/envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "versions"
+path = "fuzz_targets/versions.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "location"
+path = "fuzz_targets/location.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session"
+path = "fuzz_targets/session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cdr"
+path = "fuzz_targets/cdr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tariff"
+path = "fuzz_targets/tariff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "token"
+path = "fuzz_targets/token.rs"
+test = false
+doc = false
+bench = false

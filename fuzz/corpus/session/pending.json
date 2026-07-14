@@ -1,0 +1,1 @@
+{"country_code":"NL","party_id":"TNM","id":"101","start_date_time":"2020-03-09T10:17:09Z","kwh":0.00,"cdr_token":{"country_code":"NL","party_id":"TNM","uid":"012345678","type":"RFID","contract_id":"NL8ACC12E46L89"},"auth_method":"WHITELIST","location_id":"LOC1","evse_uid":"3256","connector_id":"1","currency":"EUR","status":"PENDING","last_updated":"2020-03-09T10:17:09Z"}
