@@ -69,6 +69,7 @@ Each milestone maps to a GitHub milestone and a release. OCPI **2.2.1** is the p
 - [x] **M7** — OCPI 2.1.1 (+ 2.2 / 2.0 back-coverage) — `v1.1.0`
 - [ ] **M8** — OCPI 2.3.0 (Payments, terminals, new fields) — `v1.2.0`
 - [ ] **M9** — Conformance, fuzzing, docs site, 3.0 forward-scaffold — `v1.3.0+`
+  - [x] Conformance corpus (2.2.1): spec-example payloads consolidated under [`conformance/`](conformance/) with a round-trip harness ([#225](https://github.com/evlinked/ocpi-rs/issues/225))
 
 > **OCPI 2.2.1 is feature-complete** across `ocpi-types`, `ocpi-client`, and `ocpi-server` (all 10 modules: types + sender methods + receiver handlers/routers). Remaining 2.2.1 work is non-blocking polish — end-to-end smoke tests ([#23](https://github.com/evlinked/ocpi-rs/issues/23), [#32](https://github.com/evlinked/ocpi-rs/issues/32), [#71](https://github.com/evlinked/ocpi-rs/issues/71), [#72](https://github.com/evlinked/ocpi-rs/issues/72)) and the ChargingProfiles Sender PUT method ([#75](https://github.com/evlinked/ocpi-rs/issues/75)).
 

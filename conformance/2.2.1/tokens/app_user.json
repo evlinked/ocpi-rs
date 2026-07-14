@@ -1,0 +1,15 @@
+{
+  "country_code": "NL",
+  "party_id": "TNM",
+  "uid": "APP_USER_123456789",
+  "type": "APP_USER",
+  "contract_id": "NL8ACC12E46L89",
+  "visual_number": "DF000-2001-8999-1",
+  "issuer": "TheNewMotion",
+  "group_id": "DF000-2001-8999",
+  "valid": true,
+  "whitelist": "NEVER",
+  "language": "it",
+  "default_profile_type": "GREEN",
+  "last_updated": "2015-06-29T22:39:09Z"
+}

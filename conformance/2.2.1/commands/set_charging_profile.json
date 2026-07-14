@@ -1,0 +1,17 @@
+{
+  "charging_profile": {
+    "duration": 900,
+    "charging_rate_unit": "W",
+    "charging_profile_period": [
+      {
+        "start_period": 0,
+        "limit": 3680
+      },
+      {
+        "start_period": 300,
+        "limit": 3500
+      }
+    ]
+  },
+  "response_url": "https://www.msp.com/ocpi/2.2.1/chargingprofiles/response?request_id=5678"
+}
