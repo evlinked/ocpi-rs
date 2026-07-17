@@ -35,6 +35,20 @@ pub enum VersionNumber {
     /// OCPI 2.3.0.
     #[serde(rename = "2.3.0")]
     V2_3_0,
+    /// OCPI 3.0 — **recognition-only** (logic deferred, `blocked-upstream`).
+    ///
+    /// 3.0 is developed in a separate, access-restricted repository and is not
+    /// vendored here, so the SDK **recognises** the identifier (parses, orders
+    /// it highest, and round-trips `"3.0"`) but ships **no `v3_0` type surface**.
+    /// Because no `supported` set the crate ships includes `V3_0`, version
+    /// negotiation can never *select* it: a 3.0-only partner degrades to *no
+    /// common version*, which the caller maps to an explicit `UnsupportedVersion`
+    /// `status_code` — the top-of-range mirror of the recognition-only 2.0 slice
+    /// (`V2_0`). See [`specs/ocpi/3.0/README.md`] — *"defer logic, not schema."*
+    ///
+    /// [`specs/ocpi/3.0/README.md`]: https://github.com/evlinked/ocpi-rs/blob/main/specs/ocpi/3.0/README.md
+    #[serde(rename = "3.0")]
+    V3_0,
 }
 
 impl VersionNumber {
@@ -47,6 +61,7 @@ impl VersionNumber {
             Self::V2_2 => "2.2",
             Self::V2_2_1 => "2.2.1",
             Self::V2_3_0 => "2.3.0",
+            Self::V3_0 => "3.0",
         }
     }
 }
@@ -61,6 +76,7 @@ impl FromStr for VersionNumber {
             "2.2" => Ok(Self::V2_2),
             "2.2.1" => Ok(Self::V2_2_1),
             "2.3.0" => Ok(Self::V2_3_0),
+            "3.0" => Ok(Self::V3_0),
             _ => Err(OcpiError::Invalid(format!("unknown OCPI version: {s}"))),
         }
     }
@@ -185,6 +201,8 @@ mod tests {
         assert!(VersionNumber::V2_1_1 < VersionNumber::V2_2);
         assert!(VersionNumber::V2_2 < VersionNumber::V2_2_1);
         assert!(VersionNumber::V2_2_1 < VersionNumber::V2_3_0);
+        // 3.0 is recognised and orders highest (recognition-only, #219).
+        assert!(VersionNumber::V2_3_0 < VersionNumber::V3_0);
     }
 
     #[test]
@@ -203,6 +221,8 @@ mod tests {
             ("2.2", VersionNumber::V2_2),
             ("2.2.1", VersionNumber::V2_2_1),
             ("2.3.0", VersionNumber::V2_3_0),
+            // 3.0 is recognised (recognition-only forward-scaffold, #219).
+            ("3.0", VersionNumber::V3_0),
         ] {
             assert_eq!(s.parse::<VersionNumber>().unwrap(), v, "parse {s}");
             assert_eq!(v.as_str(), s, "as_str for {s}");
@@ -211,8 +231,22 @@ mod tests {
     }
 
     #[test]
+    fn version_number_v3_0_serde_round_trips() {
+        // Recognition-only: `"3.0"` parses and round-trips through serde so a
+        // partner catalogue that merely *lists* 3.0 deserializes cleanly rather
+        // than failing the whole payload (#219).
+        let json = serde_json::to_string(&VersionNumber::V3_0).unwrap();
+        assert_eq!(json, "\"3.0\"");
+        let back: VersionNumber = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, VersionNumber::V3_0);
+    }
+
+    #[test]
     fn version_number_from_str_unknown() {
-        assert!("3.0".parse::<VersionNumber>().is_err());
+        // A genuinely-unknown version is still a hard error — recognition of
+        // 3.0 must not loosen rejection of versions the SDK does not know.
+        assert!("9.9".parse::<VersionNumber>().is_err());
+        assert!("2.4".parse::<VersionNumber>().is_err());
         assert!("".parse::<VersionNumber>().is_err());
     }
 
