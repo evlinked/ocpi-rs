@@ -6,6 +6,11 @@ members = [
     "crates/ocpi-server",
     "crates/ocpi-cli",
 ]
+# The `fuzz/` cargo-fuzz member is deliberately excluded from the default
+# workspace: it depends on the nightly-only libFuzzer runtime and is built via
+# `cargo +nightly fuzz`, so `cargo build/test --workspace` and the
+# `-D warnings` CI gates never touch it. See `fuzz/README.md`.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.0"
