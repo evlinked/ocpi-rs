@@ -1,0 +1,9 @@
+{
+  "data": [
+    { "version": "2.1.1", "url": "https://www.server.com/ocpi/2.1.1" },
+    { "version": "2.2.1", "url": "https://www.server.com/ocpi/2.2.1" }
+  ],
+  "status_code": 1000,
+  "status_message": "Success",
+  "timestamp": "2015-06-30T21:59:59Z"
+}
