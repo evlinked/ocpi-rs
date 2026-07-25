@@ -1,0 +1,5 @@
+# cargo-fuzz build + run artifacts (seed corpora under corpus/ ARE committed).
+/target
+/artifacts
+/coverage
+Cargo.lock
