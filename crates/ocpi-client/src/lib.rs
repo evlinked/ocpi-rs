@@ -137,7 +137,9 @@ fn token_type_2_1_1_str(t: TokenType2111) -> &'static str {
 /// explicit OCPI `status_code` (`UnsupportedVersion`), never a silent drop.
 ///
 /// Ordering follows [`VersionNumber`]'s `Ord`:
-/// `V2_3_0 > V2_2_1 > V2_2 > V2_1_1 > V2_0`.
+/// `V3_0 > V2_3_0 > V2_2_1 > V2_2 > V2_1_1 > V2_0`. `V3_0` is recognised but
+/// never selectable — no `supported` set the crate ships includes it, so a
+/// 3.0-only partner degrades to `None` (→ `UnsupportedVersion`).
 ///
 /// For the convenience method that performs the full network bootstrap
 /// (`GET /versions` then `GET /versions/{version}`), see
@@ -474,7 +476,9 @@ impl OcpiClient {
     /// 2. Intersect with `supported` (this party's versions); pick the highest.
     /// 3. `GET <version-url>` — return the selected version's [`VersionDetails`].
     ///
-    /// Version priority (highest wins): `V2_3_0 > V2_2_1 > V2_2 > V2_1_1 > V2_0`.
+    /// Version priority (highest wins):
+    /// `V3_0 > V2_3_0 > V2_2_1 > V2_2 > V2_1_1 > V2_0`. `V3_0` is recognised
+    /// but never selectable (no shipped `supported` set includes it).
     ///
     /// For the pure, IO-free version-selection step on an already-fetched
     /// `/versions` list, see the free function [`negotiate_version`].
@@ -4765,6 +4769,41 @@ mod tests {
         assert_eq!(
             negotiate_version(&remote, &HUB_SUPPORTED),
             Some(VersionNumber::V2_1_1)
+        );
+    }
+
+    #[test]
+    fn negotiate_disjoint_returns_none_for_3_0_only_partner() {
+        // Recognition-only forward-scaffold (#219): a partner advertising ONLY
+        // 3.0 — a version no shipped `supported` set includes — yields no common
+        // version, exactly as the 2.0-only partner does at the bottom of the
+        // range. The caller maps `None` to an explicit `UnsupportedVersion`. The
+        // 3.0 entry now *parses* (it is a recognised version) instead of failing
+        // the whole `/versions` catalogue deserialize.
+        let remote: Vec<Version> = serde_json::from_str(
+            r#"[{"version": "3.0", "url": "https://partner.example/ocpi/3.0"}]"#,
+        )
+        .unwrap();
+        assert_eq!(remote[0].version, VersionNumber::V3_0);
+        assert_eq!(negotiate_version(&remote, &HUB_SUPPORTED), None);
+    }
+
+    #[test]
+    fn negotiate_ignores_forward_3_0_and_picks_highest_mutual() {
+        // A forward-looking partner advertising 3.0 alongside a mutual 2.2.1:
+        // recognising 3.0 must NOT make it selectable — negotiation still lands
+        // on the highest version both actually speak (2.2.1), so one 3.0 entry
+        // in the list never breaks an otherwise-working handshake (#219).
+        let remote: Vec<Version> = serde_json::from_str(
+            r#"[
+                {"version": "3.0", "url": "https://partner.example/ocpi/3.0"},
+                {"version": "2.2.1", "url": "https://partner.example/ocpi/2.2.1"}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            negotiate_version(&remote, &HUB_SUPPORTED),
+            Some(VersionNumber::V2_2_1)
         );
     }
 
