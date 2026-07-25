@@ -1,0 +1,16 @@
+{
+    "response_url": "https://example.com/ocpi/emsp/2.2/commands/START_SESSION/42",
+    "token": {
+        "country_code": "DE",
+        "party_id": "TNM",
+        "uid": "12345678905880",
+        "type": "RFID",
+        "contract_id": "DE8ACC12E46L89",
+        "issuer": "TheNewMotion",
+        "valid": true,
+        "whitelist": "ALLOWED",
+        "last_updated": "2015-06-29T22:39:09Z"
+    },
+    "location_id": "LOC1",
+    "evse_uid": "3256"
+}

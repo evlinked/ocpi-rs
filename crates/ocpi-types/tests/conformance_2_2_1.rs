@@ -17,47 +17,18 @@
 //! both). A fixture the crate cannot faithfully represent fails CI with a clear,
 //! per-fixture message naming the file.
 //!
-//! Scope: **2.2.1 only** (the primary production target), per #225's "land 2.2.1
-//! first" guard. Follow-up corpora for 2.1.1 / 2.2 / 2.3.0 are tracked as a
-//! separate slice.
+//! Scope: **2.2.1** (the primary production target), per #225's "land 2.2.1
+//! first" guard. The 2.1.1 / 2.2 / 2.3.0 corpora (#234) live in sibling
+//! harnesses (`conformance_2_1_1.rs`, `conformance_2_2.rs`,
+//! `conformance_2_3_0.rs`) and share the [`corpus_common::round_trip`] helper.
 
-use std::fmt::Debug;
+mod corpus_common;
 
-use ocpi_types::serde::{de::DeserializeOwned, Serialize};
-use ocpi_types::serde_json;
+use corpus_common::round_trip;
 use ocpi_types::v2_2_1::{
     Cdr, CdrToken, ClientInfo, Credentials, Session, SetChargingProfile, StartSession, Tariff,
     Token,
 };
-
-/// Deserialize `json` into `T`, re-serialize, and deserialize again — asserting
-/// the two typed values are equal. `fixture` names the corpus file so a failure
-/// points straight at the offending example.
-fn round_trip<T>(fixture: &str, json: &str)
-where
-    T: DeserializeOwned + Serialize + PartialEq + Debug,
-{
-    let first: T = serde_json::from_str(json).unwrap_or_else(|e| {
-        panic!(
-            "[{fixture}] does not deserialize into {}: {e}",
-            type_of::<T>()
-        )
-    });
-    let reserialized = serde_json::to_string(&first)
-        .unwrap_or_else(|e| panic!("[{fixture}] re-serialization failed: {e}"));
-    let second: T = serde_json::from_str(&reserialized)
-        .unwrap_or_else(|e| panic!("[{fixture}] re-deserialization failed: {e}"));
-    assert_eq!(
-        first,
-        second,
-        "[{fixture}] round-trip is not stable for {}",
-        type_of::<T>()
-    );
-}
-
-fn type_of<T>() -> &'static str {
-    std::any::type_name::<T>()
-}
 
 /// One assertion per vendored 2.2.1 spec example. `include_str!` embeds each
 /// fixture at compile time (no runtime CWD dependency), so a deleted or renamed
