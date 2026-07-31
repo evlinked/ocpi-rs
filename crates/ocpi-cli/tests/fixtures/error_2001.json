@@ -1,0 +1,5 @@
+{
+  "status_code": 2001,
+  "status_message": "Missing required field: type",
+  "timestamp": "2015-06-30T21:59:59Z"
+}
