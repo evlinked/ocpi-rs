@@ -10,7 +10,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::common::Url;
 use crate::OcpiError;
@@ -106,27 +106,34 @@ pub struct Version {
 
 /// Module identifier as it appears on the wire in an `Endpoint` object.
 ///
-/// Each module has a fixed lowercase ASCII identifier.
+/// Each standard module has a fixed lowercase ASCII identifier. The OCPI spec
+/// also lets parties advertise **custom or customized modules** whose
+/// identifier is any other string (conventionally prefixed with country-code +
+/// party-id, e.g. `"nltnm-tokens"`). Such an id is preserved verbatim in
+/// [`ModuleID::Custom`] and round-trips byte-for-byte, so a single custom entry
+/// in a partner's `GET /versions/{version}` catalogue no longer fails the whole
+/// payload — mirroring the raw-preserving
+/// [`OcpiStatusCode::Unknown`](crate::OcpiStatusCode::Unknown) precedent
+/// (tolerant where the spec is open, strict where it is closed).
 ///
-/// Custom module IDs (`"nltnm-tokens"` style) are spec-allowed but not yet
-/// modelled; deserializing one will return an error. A follow-up issue will
-/// add an `Other(String)` catch-all.
+/// A `Custom` id is opaque data: it never compares equal to a standard variant,
+/// so routing / endpoint-selection that matches against the known modules
+/// ignores it (per the spec's "only send to parties you have an agreement
+/// with").
 ///
-/// Spec: `specs/ocpi/2.2.1/version_information_endpoint.asciidoc` — ModuleID enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// Spec: `specs/ocpi/2.2.1/version_information_endpoint.asciidoc` — ModuleID
+/// enum, `===== Custom Modules`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ModuleID {
     /// Charge Detail Records module.
     Cdrs,
     /// Charging Profiles module (`"chargingprofiles"`).
-    #[serde(rename = "chargingprofiles")]
     ChargingProfiles,
     /// Commands module.
     Commands,
     /// Credentials & Registration module (required for all implementations).
     Credentials,
     /// Hub Client Info module (`"hubclientinfo"`).
-    #[serde(rename = "hubclientinfo")]
     HubClientInfo,
     /// Locations module.
     Locations,
@@ -138,6 +145,77 @@ pub enum ModuleID {
     Tariffs,
     /// Tokens module.
     Tokens,
+    /// A custom or customized module ID the spec permits (`===== Custom
+    /// Modules`), preserved verbatim. Opaque to routing — never matches a
+    /// standard module.
+    Custom(String),
+}
+
+impl ModuleID {
+    /// The wire identifier string for this module.
+    ///
+    /// Standard variants return their fixed lowercase identifier; a
+    /// [`ModuleID::Custom`] returns its preserved raw string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Cdrs => "cdrs",
+            Self::ChargingProfiles => "chargingprofiles",
+            Self::Commands => "commands",
+            Self::Credentials => "credentials",
+            Self::HubClientInfo => "hubclientinfo",
+            Self::Locations => "locations",
+            Self::Payments => "payments",
+            Self::Sessions => "sessions",
+            Self::Tariffs => "tariffs",
+            Self::Tokens => "tokens",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+
+    /// Whether this is a custom (non-standard) module ID.
+    #[must_use]
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Self::Custom(_))
+    }
+}
+
+impl From<&str> for ModuleID {
+    /// Maps a wire identifier to its standard variant, or preserves an unknown
+    /// id verbatim as [`ModuleID::Custom`]. A standard id never lands in
+    /// `Custom`.
+    fn from(s: &str) -> Self {
+        match s {
+            "cdrs" => Self::Cdrs,
+            "chargingprofiles" => Self::ChargingProfiles,
+            "commands" => Self::Commands,
+            "credentials" => Self::Credentials,
+            "hubclientinfo" => Self::HubClientInfo,
+            "locations" => Self::Locations,
+            "payments" => Self::Payments,
+            "sessions" => Self::Sessions,
+            "tariffs" => Self::Tariffs,
+            "tokens" => Self::Tokens,
+            other => Self::Custom(other.to_owned()),
+        }
+    }
+}
+
+impl Serialize for ModuleID {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ModuleID {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Deserialize as a raw string, then fold known ids onto their fixed
+        // variant and preserve anything else as `Custom`. Unlike a closed
+        // `#[derive(Deserialize)]` enum, an unrecognised id is data, not an
+        // error — so one custom endpoint never fails the whole VersionDetails.
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::from(raw.as_str()))
+    }
 }
 
 // ── InterfaceRole ─────────────────────────────────────────────────────────────
@@ -283,6 +361,113 @@ mod tests {
             let back: ModuleID = serde_json::from_str(&json).unwrap();
             assert_eq!(back, *id, "deserialize {id:?}");
         }
+    }
+
+    #[test]
+    fn module_id_payments_serde_roundtrip() {
+        // `payments` (2.3.0) is a standard variant, not a custom id.
+        assert_eq!(
+            serde_json::to_string(&ModuleID::Payments).unwrap(),
+            "\"payments\""
+        );
+        let back: ModuleID = serde_json::from_str("\"payments\"").unwrap();
+        assert_eq!(back, ModuleID::Payments);
+        assert!(!back.is_custom());
+    }
+
+    #[test]
+    fn module_id_custom_round_trips_byte_for_byte() {
+        // A spec-allowed custom module id (`===== Custom Modules`,
+        // `version_information_endpoint.asciidoc:189-194`) deserializes into a
+        // raw-preserving `Custom` and re-serializes verbatim.
+        let json = "\"nltnm-tokens\"";
+        let id: ModuleID = serde_json::from_str(json).unwrap();
+        assert_eq!(id, ModuleID::Custom("nltnm-tokens".to_owned()));
+        assert!(id.is_custom());
+        assert_eq!(id.as_str(), "nltnm-tokens");
+        assert_eq!(serde_json::to_string(&id).unwrap(), json);
+    }
+
+    #[test]
+    fn module_id_standard_never_lands_in_custom() {
+        // Every standard wire id folds onto its fixed variant, not `Custom`.
+        for s in [
+            "cdrs",
+            "chargingprofiles",
+            "commands",
+            "credentials",
+            "hubclientinfo",
+            "locations",
+            "payments",
+            "sessions",
+            "tariffs",
+            "tokens",
+        ] {
+            let id: ModuleID = serde_json::from_str(&format!("\"{s}\"")).unwrap();
+            assert!(!id.is_custom(), "{s} must not be Custom");
+            assert_eq!(id.as_str(), s);
+        }
+    }
+
+    #[test]
+    fn module_id_custom_is_opaque_to_routing() {
+        // A custom id never compares equal to any standard module, so
+        // endpoint-selection logic that matches known modules ignores it.
+        let custom = ModuleID::Custom("nltnm-tokens".to_owned());
+        for standard in [
+            ModuleID::Cdrs,
+            ModuleID::ChargingProfiles,
+            ModuleID::Commands,
+            ModuleID::Credentials,
+            ModuleID::HubClientInfo,
+            ModuleID::Locations,
+            ModuleID::Payments,
+            ModuleID::Sessions,
+            ModuleID::Tariffs,
+            ModuleID::Tokens,
+        ] {
+            assert_ne!(custom, standard);
+        }
+    }
+
+    #[test]
+    fn version_details_mixes_standard_and_custom_endpoints() {
+        // The load-bearing handshake fence: a `VersionDetails` that lists a
+        // custom endpoint alongside standard ones deserializes successfully,
+        // with the standard endpoints intact and the custom one preserved —
+        // instead of the whole catalogue failing on the unknown id.
+        let json = r#"{
+            "version": "2.2.1",
+            "endpoints": [
+                {
+                    "identifier": "credentials",
+                    "role": "SENDER",
+                    "url": "https://example.com/ocpi/cpo/2.2.1/credentials"
+                },
+                {
+                    "identifier": "locations",
+                    "role": "SENDER",
+                    "url": "https://example.com/ocpi/cpo/2.2.1/locations"
+                },
+                {
+                    "identifier": "nltnm-tokens",
+                    "role": "SENDER",
+                    "url": "https://example.com/ocpi/cpo/2.2.1/nltnm-tokens"
+                }
+            ]
+        }"#;
+        let details: VersionDetails = serde_json::from_str(json).unwrap();
+        assert_eq!(details.endpoints.len(), 3);
+        assert_eq!(details.endpoints[0].identifier, ModuleID::Credentials);
+        assert_eq!(details.endpoints[1].identifier, ModuleID::Locations);
+        assert_eq!(
+            details.endpoints[2].identifier,
+            ModuleID::Custom("nltnm-tokens".to_owned())
+        );
+        // Full VersionDetails round-trips, custom id preserved verbatim.
+        let back: VersionDetails =
+            serde_json::from_str(&serde_json::to_string(&details).unwrap()).unwrap();
+        assert_eq!(back, details);
     }
 
     // ── InterfaceRole ──
