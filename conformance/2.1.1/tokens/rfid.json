@@ -1,0 +1,11 @@
+{
+    "uid": "12345678905880",
+    "type": "RFID",
+    "auth_id": "DE8ACC12E46L89",
+    "visual_number": "DF000-2001-8999",
+    "issuer": "TheNewMotion",
+    "valid": true,
+    "whitelist": "ALLOWED",
+    "language": "it",
+    "last_updated": "2018-12-10T17:25:10Z"
+}

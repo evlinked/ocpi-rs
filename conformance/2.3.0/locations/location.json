@@ -1,0 +1,23 @@
+{
+    "country_code": "NL",
+    "party_id": "ABC",
+    "id": "LOC1",
+    "publish": true,
+    "address": "F.Rooseveltlaan 3A",
+    "city": "Amsterdam",
+    "country": "NLD",
+    "coordinates": { "latitude": "52.376364", "longitude": "4.898168" },
+    "parking_type": "ON_STREET",
+    "parking_places": [
+        {
+            "id": "space-1",
+            "vehicle_types": ["PERSONAL_VEHICLE", "DISABLED"],
+            "restricted_to_type": true,
+            "reservation_required": false,
+            "direction": "PARALLEL"
+        }
+    ],
+    "time_zone": "Europe/Amsterdam",
+    "help_phone": "+31201234567",
+    "last_updated": "2026-07-12T10:00:00Z"
+}

@@ -1,0 +1,28 @@
+{
+    "country_code": "CA",
+    "party_id": "EXA",
+    "id": "session-2-3-0-na",
+    "start_date_time": "2026-07-11T09:00:00Z",
+    "kwh": 12.5,
+    "cdr_token": {
+        "country_code": "CA",
+        "party_id": "EXA",
+        "uid": "12345",
+        "type": "RFID",
+        "contract_id": "CA-EXA-C12345"
+    },
+    "auth_method": "WHITELIST",
+    "location_id": "LOC1",
+    "evse_uid": "EVSE1",
+    "connector_id": "1",
+    "currency": "CAD",
+    "total_cost": {
+        "before_taxes": 10.00,
+        "taxes": [
+            { "name": "GST", "percentage": 5.0, "amount": 0.50 },
+            { "name": "QST", "percentage": 9.975, "amount": 0.9975 }
+        ]
+    },
+    "status": "ACTIVE",
+    "last_updated": "2026-07-11T09:05:00Z"
+}

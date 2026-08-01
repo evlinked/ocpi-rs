@@ -1,0 +1,9 @@
+{
+    "id": "fac-0001",
+    "authorization_reference": "AUTH-REF-123",
+    "total_costs": { "excl_vat": 8.50, "incl_vat": 10.29 },
+    "currency": "EUR",
+    "eft_data": ["****1234", "PSP-TXN-9988"],
+    "capture_status_code": "SUCCESS",
+    "last_updated": "2024-01-03T12:00:00Z"
+}

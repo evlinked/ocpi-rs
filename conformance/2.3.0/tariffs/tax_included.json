@@ -1,0 +1,15 @@
+{
+    "country_code": "US",
+    "party_id": "EXA",
+    "id": "20",
+    "currency": "USD",
+    "tax_included": "YES",
+    "elements": [
+        {
+            "price_components": [
+                { "type": "TIME", "price": 2.1, "step_size": 60 }
+            ]
+        }
+    ],
+    "last_updated": "2026-07-11T09:00:00Z"
+}

@@ -1,0 +1,21 @@
+{
+    "terminal_id": "55719888-ed09-4cca-82cc-803bdb77bf26",
+    "customer_reference": "CUSTOMER-42",
+    "party_id": "ABC",
+    "country_code": "NL",
+    "address": "F.Rooseveltlaan 3A",
+    "city": "Kerkrade",
+    "postal_code": "6419",
+    "state": "Limburg",
+    "country": "NLD",
+    "coordinates": {
+        "latitude": "50.770774",
+        "longitude": "-126.104965"
+    },
+    "invoice_base_url": "https://www.server.com/invoices",
+    "invoice_creator": "CPO",
+    "reference": "SN-000123",
+    "location_ids": ["LOC1", "LOC2"],
+    "evse_uids": ["EVSE1", "EVSE2", "EVSE3"],
+    "last_updated": "2024-01-02T10:15:30Z"
+}

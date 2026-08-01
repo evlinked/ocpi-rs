@@ -1,0 +1,59 @@
+{
+    "country_code": "CA",
+    "party_id": "EXA",
+    "id": "cdr-2-3-0-na",
+    "start_date_time": "2026-07-11T09:00:00Z",
+    "end_date_time": "2026-07-11T10:00:00Z",
+    "cdr_token": {
+        "country_code": "CA",
+        "party_id": "EXA",
+        "uid": "12345",
+        "type": "RFID",
+        "contract_id": "CA-EXA-C12345"
+    },
+    "auth_method": "WHITELIST",
+    "cdr_location": {
+        "id": "LOC1",
+        "address": "F.Rooseveltlaan 3A",
+        "city": "Ottawa",
+        "country": "CAN",
+        "coordinates": { "latitude": "45.421", "longitude": "-75.697" },
+        "evse_uid": "EVSE1",
+        "evse_id": "CA*EXA*E1",
+        "connector_id": "1",
+        "connector_standard": "IEC_62196_T2",
+        "connector_format": "SOCKET",
+        "connector_power_type": "AC_1_PHASE"
+    },
+    "currency": "CAD",
+    "tariffs": [
+        {
+            "country_code": "CA",
+            "party_id": "EXA",
+            "id": "19",
+            "currency": "CAD",
+            "tax_included": "NO",
+            "elements": [
+                { "price_components": [ { "type": "TIME", "price": 2.0, "step_size": 60 } ] }
+            ],
+            "last_updated": "2026-07-11T09:00:00Z"
+        }
+    ],
+    "charging_periods": [
+        {
+            "start_date_time": "2026-07-11T09:00:00Z",
+            "dimensions": [ { "type": "TIME", "volume": 1.0 } ]
+        }
+    ],
+    "total_cost": {
+        "before_taxes": 2.00,
+        "taxes": [
+            { "name": "GST", "percentage": 5.0, "amount": 0.10 },
+            { "name": "QST", "account_number": "1234567890", "percentage": 9.975, "amount": 0.1995 }
+        ]
+    },
+    "total_time_cost": { "before_taxes": 2.00, "taxes": [ { "name": "GST", "amount": 0.10 } ] },
+    "total_energy": 0.0,
+    "total_time": 1.0,
+    "last_updated": "2026-07-11T10:00:00Z"
+}

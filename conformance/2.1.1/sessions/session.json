@@ -1,0 +1,22 @@
+{
+    "id": "101",
+    "start_datetime": "2015-06-29T22:39:09Z",
+    "kwh": 0.0,
+    "auth_id": "DE8ACC12E46L89",
+    "auth_method": "WHITELIST",
+    "location": {
+        "id": "LOC1",
+        "type": "ON_STREET",
+        "name": "Gent Zuid",
+        "address": "F.Rooseveltlaan 3A",
+        "city": "Gent",
+        "postal_code": "9000",
+        "country": "BEL",
+        "coordinates": { "latitude": "51.047599", "longitude": "3.729944" },
+        "last_updated": "2015-06-29T20:39:09Z"
+    },
+    "currency": "EUR",
+    "total_cost": 2.5,
+    "status": "PENDING",
+    "last_updated": "2015-06-29T22:39:09Z"
+}
